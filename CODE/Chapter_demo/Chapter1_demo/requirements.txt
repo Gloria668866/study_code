@@ -1,0 +1,3 @@
+
+#需要安装
+pip install llama-cpp-python
