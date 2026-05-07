@@ -1,0 +1,8 @@
+langchain-core
+langchain-openai
+langgraph
+pydantic
+python-dotenv
+playwright
+requests
+volcengine

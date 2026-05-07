@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+streamlit
+langgraph
+langchain-core
+langchain-openai
+pydantic
+python-dotenv
+python-multipart
+SQLAlchemy
+PyMySQL

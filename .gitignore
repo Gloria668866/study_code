@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large model files
+model/
+*.pth
+*.bin
+*.safetensors
+*.gguf
+
+# Audio/Video
+voice/
+uploaded_files/
+*.wav
+*.mp3
+*.mp4
+*.flac
+
+# Database
+*.db
+*.sqlite
+
+# FFmpeg binaries
+tool/ffmpeg*/
+ffmpeg*/
+
+# Credentials
+cookie/
+*.json.state
+
+# Data directories (large)
+data/
+
+# Pictures
+picture/
+
+# Jupyter
+.ipynb_checkpoints/
