@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 智能简历分析系统</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: rgba(255, 255, 255, 0.08);
+        --panel-border: rgba(255, 255, 255, 0.14);
+        --text: #e8ecff;
+        --muted: #aab3d9;
+        --accent: #7c9cff;
+        --accent-2: #57d3ff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: radial-gradient(circle at top, #18234b, var(--bg) 55%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 20px 56px; }
+      .hero { display: grid; gap: 16px; margin-bottom: 24px; }
+      h1 { font-size: 40px; margin: 0; }
+      p { color: var(--muted); line-height: 1.7; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 20px;
+        padding: 20px;
+        backdrop-filter: blur(20px);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+      }
+      label { display: block; font-size: 14px; margin: 12px 0 8px; color: #dce3ff; }
+      textarea, input[type="file"] {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,.16);
+        background: rgba(255,255,255,.06);
+        color: var(--text);
+        padding: 14px;
+        font-size: 14px;
+      }
+      textarea { min-height: 140px; resize: vertical; }
+      button {
+        margin-top: 16px;
+        border: 0;
+        padding: 12px 18px;
+        border-radius: 999px;
+        color: #08111f;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        font-weight: 700;
+        cursor: pointer;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: rgba(0,0,0,.25);
+        border-radius: 16px;
+        padding: 16px;
+        overflow: auto;
+        min-height: 220px;
+      }
+      .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+      .stat { background: rgba(255,255,255,.06); padding: 14px; border-radius: 16px; }
+      .stat strong { display: block; font-size: 22px; margin-top: 8px; }
+      .hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } h1 { font-size: 30px; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="hero">
+        <h1>AI 赋能的智能简历分析系统</h1>
+        <p>上传 PDF 简历，输入岗位描述，即可自动提取关键信息、分析关键词并计算匹配度。</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <label>后端地址</label>
+          <input id="apiBase" type="text" value="http://127.0.0.1:8000" />
+          <label>上传简历 PDF</label>
+          <input id="file" type="file" accept="application/pdf" />
+          <label>岗位描述</label>
+          <textarea id="job" placeholder="请输入岗位职责、技能要求、业务场景等信息"></textarea>
+          <button onclick="submitForm()">开始分析</button>
+          <div class="hint">提示：部署到 GitHub Pages 时，把后端地址改为线上接口地址。</div>
+        </div>
+        <div class="card">
+          <label>分析结果</label>
+          <pre id="output">等待上传与分析...</pre>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><span>匹配分</span><strong id="score">-</strong></div>
+        <div class="stat"><span>识别姓名</span><strong id="name">-</strong></div>
+        <div class="stat"><span>缓存状态</span><strong id="cached">-</strong></div>
+      </div>
+    </div>
+    <script>
+      async function submitForm() {
+        const file = document.getElementById('file').files[0];
+        const job = document.getElementById('job').value;
+        const apiBase = document.getElementById('apiBase').value.replace(/\/$/, '');
+        if (!file) return alert('请先选择 PDF 文件');
+        const form = new FormData();
+        form.append('file', file);
+        form.append('job_description', job);
+        const res = await fetch(`${apiBase}/api/resume/analyze`, { method: 'POST', body: form });
+        const data = await res.json();
+        document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+        document.getElementById('score').textContent = data.match ? data.match.overall_score : '-';
+        document.getElementById('name').textContent = data.summary?.name || '-';
+        document.getElementById('cached').textContent = data.cached ? '是' : '否';
+      }
+    </script>
+  </body>
+</html>
