@@ -1,0 +1,63 @@
+// RAG 评测集（60 条）。category: single(单段可答)/multi(跨段综合,考父块归并)/conflict(多源冲突)/none(库里没有,考不幻觉)。
+// ground_truth 锚定真实文档事实（研报 doc104 / 乘联会 110,121,122,131,134,139 / 口碑 158,176）。
+// expected_doc_ids 供确定性检索命中率；conflict 用 inject 运行时注入、评完软删；none 应 has_answer=false。
+{"id":"rag-001","category":"single","question":"研报里说2025年纯电在新能源中的占比大约是多少","ground_truth":"约六成（纯电占比约60%，插混与增程合计约四成）","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-002","category":"single","question":"研报说2025年长期位居销量榜前列的车系有哪些","ground_truth":"星愿、小米SU7、Model Y、理想L6","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-003","category":"single","question":"研报怎么描述10-20万元价格带的竞争","ground_truth":"竞争最激烈，是走量主力","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-004","category":"single","question":"研报说主流纯电车型的续航上限在什么水平","ground_truth":"普遍进入600-800km，部分旗舰超过1000km","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-005","category":"single","question":"研报总结的2025年技术主线是什么","ground_truth":"800V高压平台、磷酸铁锂与三元锂并行、超快充网络扩张","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-006","category":"single","question":"研报对2026年的展望是什么","ground_truth":"渗透率进一步提升，增程与插混在中大型车继续放量，价格战趋于理性，头部集中度或提高","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-007","category":"single","question":"研报里新势力品牌的代表有哪些","ground_truth":"理想、蔚来、小鹏、小米","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-008","category":"single","question":"研报说用户口碑里哪些方面得分较高","ground_truth":"外观、空间、智能化得分较高","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-009","category":"single","question":"研报说30万元以上的高端市场由谁占据","ground_truth":"由理想、问界等占据，增程在中大型SUV优势明显","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-010","category":"single","question":"研报里新能源车的口碑总分大概是多少","ground_truth":"口碑总分多在4.0分以上（满分5分）","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-011","category":"single","question":"截至2026年3月底我国电动汽车充电基础设施总数是多少","ground_truth":"2148.1万个（枪），同比增长46.9%","expected_doc_ids":[110],"should_answer":true}
+{"id":"rag-012","category":"single","question":"截至2026年4月底我国电动汽车充电基础设施总数是多少","ground_truth":"2195.5万个（枪），同比增长47.4%","expected_doc_ids":[139],"should_answer":true}
+{"id":"rag-013","category":"single","question":"2026年3月底公共充电设施有多少","ground_truth":"公共充电设施486.3万个（枪），同比增长28.1%","expected_doc_ids":[110],"should_answer":true}
+{"id":"rag-014","category":"single","question":"2026年五一期间高速公路新能源汽车充电了多少次","ground_truth":"共计397.84万次","expected_doc_ids":[122],"should_answer":true}
+{"id":"rag-015","category":"single","question":"五一期间高速公路充电量同比增长了多少","ground_truth":"同比增长52.8%","expected_doc_ids":[122],"should_answer":true}
+{"id":"rag-016","category":"single","question":"2026年一季度我国汽车整车累计出口多少辆","ground_truth":"231.2万辆，同比增长40.9%","expected_doc_ids":[121],"should_answer":true}
+{"id":"rag-017","category":"single","question":"2026年一季度汽车整车累计出口金额是多少","ground_truth":"407.7亿美元，同比增长56.0%","expected_doc_ids":[121],"should_answer":true}
+{"id":"rag-018","category":"single","question":"预计2030年废旧动力电池产生量会达到多少","ground_truth":"预计超过100万吨","expected_doc_ids":[131],"should_answer":true}
+{"id":"rag-019","category":"single","question":"蔚来目前在全国建成的充电站有多少座","ground_truth":"充电站突破5000座，达到5023座","expected_doc_ids":[134],"should_answer":true}
+{"id":"rag-020","category":"single","question":"蔚来目前的换电站有多少座","ground_truth":"换电站达到3851座","expected_doc_ids":[134],"should_answer":true}
+{"id":"rag-021","category":"single","question":"蔚来全国充换电站总数是多少","ground_truth":"已建成8874座充换电站","expected_doc_ids":[134],"should_answer":true}
+{"id":"rag-022","category":"single","question":"2026年3月汽车整车出口同比增长了多少","ground_truth":"同比增长30.8%（3月出口78万辆）","expected_doc_ids":[121],"should_answer":true}
+{"id":"rag-023","category":"single","question":"截至2026年3月底充电基础设施同比增长了多少","ground_truth":"同比增长46.9%","expected_doc_ids":[110],"should_answer":true}
+{"id":"rag-024","category":"single","question":"小米YU7车主说实际显示续航大概多少","ground_truth":"实际显示续航约550km","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-025","category":"single","question":"小米YU7的百公里能耗是多少","ground_truth":"系统显示能耗约百公里16.3度电","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-026","category":"single","question":"小米YU7用的是什么电池","ground_truth":"比亚迪的磷酸铁锂电池","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-027","category":"multi","question":"研报怎么分析2025年的价格带格局","ground_truth":"10-20万竞争最激烈是走量主力；20-30万由Model Y、小米SU7支撑；30万以上由理想、问界等高端占据","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-028","category":"multi","question":"研报怎么看2025年的品牌格局","ground_truth":"自主新势力与传统自主主导、合资追赶；第一梯队为比亚迪系、吉利银河、理想、小米、鸿蒙智行","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-029","category":"multi","question":"理想i8车主对它的外观和内饰怎么评价","ground_truth":"外观科幻、像榴莲褒贬不一；内饰让人放松、母婴级用料、几乎无异味","expected_doc_ids":[158],"should_answer":true}
+{"id":"rag-030","category":"multi","question":"小米YU7的续航和能耗整体表现如何","ground_truth":"用比亚迪磷酸铁锂电池，实际续航约550km，百公里能耗约16.3度","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-031","category":"multi","question":"小米YU7的驾驶和泊车体验怎么样","ground_truth":"百公里约4秒动力强、悬架可调；自动泊车与寻位泊车好用、可设居中偏左偏右","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-032","category":"multi","question":"综合看2025年新能源的销量规模和能源结构","ground_truth":"延续高增长，纯电是主力约占六成，插混与增程增速更快、合计约四成且份额上行","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-033","category":"multi","question":"对比2026年3月底和4月底全国充电桩总数的变化","ground_truth":"3月底2148.1万个，4月底2195.5万个，环比增加约47万个","expected_doc_ids":[110,139],"should_answer":true}
+{"id":"rag-034","category":"multi","question":"研报对续航与技术趋势是怎么判断的","ground_truth":"续航600-800km主流并向1000km与快充并重；电池以磷酸铁锂为主；800V平台渗透提升快充体验","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-035","category":"multi","question":"2026年初我国新能源出口和充电设施的整体态势如何","ground_truth":"一季度整车出口231.2万辆高增长；充电桩到4月底达2195.5万个、同比增长约47%","expected_doc_ids":[121,139],"should_answer":true}
+{"id":"rag-036","category":"multi","question":"理想i8车主提到和蔚来ES8对比时的感受是什么","ground_truth":"ES8静态体验大气商务；i8坐进去更放松、是不一样的感觉","expected_doc_ids":[158],"should_answer":true}
+{"id":"rag-037","category":"multi","question":"研报怎么看政策对新能源市场的影响","ground_truth":"购置税减免延续、双积分、地方补贴与牌照政策是关键变量；充电基础设施持续加码缓解补能焦虑","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-038","category":"multi","question":"我国新能源动力电池回收的政策方向和企业参与情况","ground_truth":"工信部调研、六部门已印发回收利用管理办法、加快构建新型回收体系；宁德时代、比亚迪、长安等参与研讨","expected_doc_ids":[131],"should_answer":true}
+{"id":"rag-039","category":"multi","question":"小米YU7车主对静音和外观的评价如何","ground_truth":"静音好、像私密空间；外观好看、尾灯有辨识度，前侧面更好看","expected_doc_ids":[176],"should_answer":true}
+{"id":"rag-040","category":"multi","question":"研报对插混和增程份额趋势的判断","ground_truth":"插混与增程合计约四成且份额持续上行，2026年在中大型车继续放量","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-041","category":"multi","question":"蔚来的补能网络规模到了什么程度","ground_truth":"8874座充换电站，其中换电站3851座、充电站5023座，配套充电桩28863根","expected_doc_ids":[134],"should_answer":true}
+{"id":"rag-042","category":"multi","question":"2025年头部车系的集中度和代表车型是怎样的","ground_truth":"头部集中度提升，星愿、小米SU7、Model Y、理想L6长期位居前列","expected_doc_ids":[104],"should_answer":true}
+{"id":"rag-043","category":"conflict","question":"2025年中国新能源乘用车渗透率到底是多少","ground_truth":"两个来源口径不一致：机构A为45%，机构B为58%，应并列标注、不取平均","conflict_values":["45","58"],"inject":[{"name":"_evalconf_pen_a.md","title":"渗透率口径甲","text":"# 渗透率口径甲\n\n据机构甲统计，2025年中国新能源乘用车渗透率为45%。"},{"name":"_evalconf_pen_b.md","title":"渗透率口径乙","text":"# 渗透率口径乙\n\n据机构乙口径，2025年中国新能源乘用车渗透率达到58%。"}],"should_answer":true}
+{"id":"rag-044","category":"conflict","question":"机构对2025年纯电在新能源里的占比怎么估算","ground_truth":"两个口径不一致：来源甲55%、来源乙62%，应并列标注","conflict_values":["55","62"],"inject":[{"name":"_evalconf_bev_a.md","title":"纯电占比甲","text":"# 纯电占比甲\n\n来源甲测算，2025年纯电占新能源比例约为55%。"},{"name":"_evalconf_bev_b.md","title":"纯电占比乙","text":"# 纯电占比乙\n\n来源乙测算，2025年纯电占新能源比例约为62%。"}],"should_answer":true}
+{"id":"rag-045","category":"conflict","question":"研究机构预测2026年新能源销量增速是多少","ground_truth":"两份预测不一致：甲15%、乙25%，应并列标注两种口径","conflict_values":["15","25"],"inject":[{"name":"_evalconf_grow_a.md","title":"增速预测甲","text":"# 增速预测甲\n\n甲机构预测2026年新能源销量同比增速约为15%。"},{"name":"_evalconf_grow_b.md","title":"增速预测乙","text":"# 增速预测乙\n\n乙机构预测2026年新能源销量同比增速约为25%。"}],"should_answer":true}
+{"id":"rag-046","category":"conflict","question":"二手新能源车三年保值率大概多少","ground_truth":"两个来源不一致：甲58%、乙49%，应并列标注","conflict_values":["58","49"],"inject":[{"name":"_evalconf_resid_a.md","title":"保值率甲","text":"# 保值率甲\n\n据来源甲，新能源车三年保值率约为58%。"},{"name":"_evalconf_resid_b.md","title":"保值率乙","text":"# 保值率乙\n\n据来源乙，新能源车三年保值率约为49%。"}],"should_answer":true}
+{"id":"rag-047","category":"conflict","question":"机构对动力电池成本下降幅度的估计是多少","ground_truth":"两个口径不一致：甲下降20%、乙下降30%，应并列标注","conflict_values":["20","30"],"inject":[{"name":"_evalconf_cost_a.md","title":"电池成本甲","text":"# 电池成本甲\n\n来源甲估计2025年动力电池成本同比下降约20%。"},{"name":"_evalconf_cost_b.md","title":"电池成本乙","text":"# 电池成本乙\n\n来源乙估计2025年动力电池成本同比下降约30%。"}],"should_answer":true}
+{"id":"rag-048","category":"conflict","question":"机构统计2025年换电车型销量占比是多少","ground_truth":"两个来源不一致：甲8%、乙13%，应并列标注","conflict_values":["8","13"],"inject":[{"name":"_evalconf_swap_a.md","title":"换电占比甲","text":"# 换电占比甲\n\n来源甲统计，2025年换电车型销量占比约8%。"},{"name":"_evalconf_swap_b.md","title":"换电占比乙","text":"# 换电占比乙\n\n来源乙统计，2025年换电车型销量占比约13%。"}],"should_answer":true}
+{"id":"rag-049","category":"none","question":"公司2024年第三季度的食堂菜单是什么","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-050","category":"none","question":"明天上海的天气怎么样","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-051","category":"none","question":"iPhone 16 的电池容量是多少毫安","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-052","category":"none","question":"如何办理北京户口","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-053","category":"none","question":"珠穆朗玛峰的海拔是多少米","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-054","category":"none","question":"我们公司今年年会在哪个酒店举办","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-055","category":"none","question":"红楼梦的作者是谁","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-056","category":"none","question":"红烧肉的家常做法是怎样的","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-057","category":"none","question":"2025年世界杯的冠军是哪支球队","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-058","category":"none","question":"员工每年有几天带薪年假","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-059","category":"none","question":"北京地铁一号线几点收班","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
+{"id":"rag-060","category":"none","question":"在中国注册一家有限责任公司需要哪些材料","ground_truth":"知识库中没有相关内容，应回答未找到","should_answer":false}
