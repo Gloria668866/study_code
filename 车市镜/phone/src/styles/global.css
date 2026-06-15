@@ -1,0 +1,11 @@
+/* 车市镜 · 移动端全局样式 */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body, #app { height: 100%; margin: 0; }
+body { font-size: 14px; line-height: 1.5; color: #111827; background: #f8f8f7; -webkit-font-smoothing: antialiased; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+:focus-visible { outline: 2px solid #dc2626; outline-offset: 2px; }
+
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } }
+@keyframes fadeIn  { from { opacity: 0; } }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
