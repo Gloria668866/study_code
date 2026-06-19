@@ -1,12 +1,13 @@
 import { reactive, ref, computed } from 'vue'
-import { API, authHeaders } from '@/api/config.js'
+import { API, IS_MOCK, authHeaders } from '@/api/config.js'
 import { postSSE } from '@/api/sse.js'
+import { mockSSE } from '@/api/mock.js'
 
 let _id = 0
 const uid = () => `${Date.now()}-${++_id}`
 
 function newAssistant() {
-  return reactive({ id: uid(), role: 'assistant', status: 'thinking', intent: null, sql: '', columns: [], rows: [], chartPayload: null, insight: '', citations: [], error: null })
+  return reactive({ id: uid(), role: 'assistant', status: 'thinking', intent: null, confidence: null, sql: '', columns: [], rows: [], chartPayload: null, insight: '', citations: [], error: null })
 }
 
 export function useChat() {
@@ -52,10 +53,10 @@ export function useChat() {
     const controller = new AbortController()
     handle = { abort: () => controller.abort() }
 
-    postSSE(API.ask, { question: q }, {
+    const handlers = {
       onEvent(ev) {
         switch (ev.type) {
-          case 'intent': msg.intent = ev.intent; break
+          case 'intent': msg.intent = ev.intent; msg.confidence = ev.confidence ?? null; break
           case 'sql': msg.sql = ev.sql_text; break
           case 'rows': msg.columns = ev.columns || []; msg.rows = ev.rows || []; break
           case 'chart': msg.chartPayload = ev.chart || ev; break
@@ -67,12 +68,16 @@ export function useChat() {
       },
       onError(err) { msg.status = 'error'; msg.error = err; sending.value = false },
       onClose() { if (msg.status !== 'error') msg.status = 'done'; sending.value = false },
-    }, controller.signal)
+    }
+    // mock（离线）↔ live（真后端 SSE）一个开关切换
+    if (IS_MOCK) mockSSE({ question: q }, handlers, controller.signal)
+    else postSSE(API.ask, { question: q }, handlers, controller.signal)
   }
 
   function stop() { handle?.abort(); sending.value = false }
 
   function loadHistory() {
+    if (IS_MOCK) return   // mock：会话仅在内存，无服务端历史
     fetch(API.history, { headers: authHeaders() }).then(r => r.json()).then(d => {
       conversations.splice(0, conversations.length)
       for (const c of (d.conversations || [])) {

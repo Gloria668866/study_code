@@ -1,6 +1,10 @@
 // API 配置 — 本地连 localhost:8000，部署后改为服务器地址
 const HOST = import.meta.env.VITE_API_HOST || 'http://localhost:8000'
 
+// 'mock'(默认) = 前端自洽，可离线演示；'live' = 连真后端。与主站同套路。
+export const DATA_SOURCE = import.meta.env.VITE_DATA_SOURCE === 'live' ? 'live' : 'mock'
+export const IS_MOCK = DATA_SOURCE === 'mock'
+
 export const API = {
   health: `${HOST}/health`,
   register: `${HOST}/api/auth/register`,

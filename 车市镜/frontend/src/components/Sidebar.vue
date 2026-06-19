@@ -8,8 +8,9 @@ const props = defineProps({
   activeId: [String, Number, null],
   user: Object,
   boardCount: { type: Number, default: 0 },
+  isAdmin: { type: Boolean, default: false },
 })
-const emit = defineEmits(['new', 'select', 'open-kb', 'open-board', 'delete', 'rename', 'logout'])
+const emit = defineEmits(['new', 'select', 'open-kb', 'open-board', 'delete', 'rename', 'logout', 'open-settings', 'open-admin'])
 
 const kw = ref('')
 const filtered = computed(() => {
@@ -81,6 +82,10 @@ function finishRename(id) { const v = renameValue.value.trim(); if (v) emit('ren
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 2.5h7l3 3V13.5H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9.5 2.5V6h3.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
         知识库
       </button>
+      <button v-if="isAdmin" class="side-link admin" @click="emit('open-admin')">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        管理后台 <span class="tag-admin">ADMIN</span>
+      </button>
     </div>
 
     <div class="foot" @click="menuOpen = !menuOpen">
@@ -88,7 +93,8 @@ function finishRename(id) { const v = renameValue.value.trim(); if (v) emit('ren
       <span class="u"><b>{{ user?.nickname || user?.username }}</b><small>已登录</small></span>
       <svg class="caret" :class="{ up: menuOpen }" width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <div v-if="menuOpen" class="menu" @click.stop>
-        <button class="mi" @click="emit('logout'); menuOpen = false">退出登录</button>
+        <button class="mi" @click="emit('open-settings'); menuOpen = false">账户设置</button>
+        <button class="mi danger" @click="emit('logout'); menuOpen = false">退出登录</button>
       </div>
     </div>
   </aside>
@@ -142,5 +148,8 @@ function finishRename(id) { const v = renameValue.value.trim(); if (v) emit('ren
 .caret.up { transform: rotate(180deg); }
 .menu { position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--sh-md); padding: 5px; z-index: 30; }
 .mi { width: 100%; text-align: left; padding: 8px 11px; font-size: 13px; color: var(--ink-2); border-radius: 7px; }
-.mi:hover { background: var(--accent-wash); color: var(--accent); }
+.mi:hover { background: var(--bg-subtle); color: var(--ink); }
+.mi.danger:hover { background: var(--down-wash); color: var(--down); }
+.side-link.admin .tag-admin { margin-left: auto; font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .08em; color: var(--accent); background: var(--accent-wash); border: 1px solid var(--accent-border); padding: 1px 6px; border-radius: 5px; }
+.side-link.admin .star, .side-link.admin svg { color: var(--accent); }
 </style>

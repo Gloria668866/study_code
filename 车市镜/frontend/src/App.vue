@@ -8,18 +8,22 @@ import Composer from './components/Composer.vue'
 import QuickSuggest from './components/QuickSuggest.vue'
 import KnowledgeBaseModal from './components/KnowledgeBaseModal.vue'
 import BoardModal from './components/BoardModal.vue'
+import SettingsModal from './components/SettingsModal.vue'
+import AdminModal from './components/AdminModal.vue'
 import LoginView from './components/LoginView.vue'
 import Toasts from './components/Toasts.vue'
 import { useChat } from './composables/useChat.js'
 import { useAuth } from './composables/useAuth.js'
 import { useBoard } from './composables/useBoard.js'
 
-const { isAuthed, state: auth, logout } = useAuth()
+const { isAuthed, isAdmin, state: auth, logout } = useAuth()
 const { conversations, activeId, active, messages, sending, newConversation, selectConversation, deleteConversation, renameConversation, send, stop } = useChat()
 const { items: boardItems } = useBoard()
 const showKb = ref(false)
 const showBoard = ref(false)
 const showSide = ref(false)
+const showSettings = ref(false)
+const showAdmin = ref(false)
 
 function onAsk(q) { if (!activeId.value) newConversation(); send(q) }
 function onSelect(id) { selectConversation(id); showSide.value = false }
@@ -47,9 +51,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
   <div v-else class="app">
     <Sidebar :class="{ 'side-open': showSide }"
-      :conversations="conversations" :activeId="activeId" :user="auth.user" :boardCount="boardItems.length"
+      :conversations="conversations" :activeId="activeId" :user="auth.user" :boardCount="boardItems.length" :isAdmin="isAdmin"
       @new="onNew" @select="onSelect" @delete="deleteConversation" @rename="renameConversation"
-      @open-kb="showKb = true" @open-board="showBoard = true" @logout="logout" />
+      @open-kb="showKb = true" @open-board="showBoard = true" @logout="logout"
+      @open-settings="showSettings = true" @open-admin="showAdmin = true" />
     <div v-if="showSide" class="side-mask" @click="showSide = false"></div>
 
     <main class="main">
@@ -68,6 +73,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
     <KnowledgeBaseModal v-if="showKb" @close="showKb = false" />
     <BoardModal v-if="showBoard" @close="showBoard = false" @ask="(q) => { showBoard = false; onAsk(q) }" />
+    <SettingsModal v-if="showSettings" @close="showSettings = false" />
+    <AdminModal v-if="showAdmin" @close="showAdmin = false" />
   </div>
 
   <Toasts />

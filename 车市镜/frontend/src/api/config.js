@@ -19,7 +19,14 @@ export const ENDPOINTS = {
   historyDetail: (id) => `${API_BASE}/api/history/${id}`, // 会话消息（还原）
   register: `${API_BASE}/api/auth/register`,
   login: `${API_BASE}/api/auth/login`,
-  me: `${API_BASE}/api/auth/me`,
+  me: `${API_BASE}/api/auth/me`,                          // GET 当前用户 / PATCH 改昵称
+  changePassword: `${API_BASE}/api/auth/change-password`,
+  myStats: `${API_BASE}/api/auth/stats`,
+  // 管理员后台（需 admin 角色）
+  adminOverview: `${API_BASE}/api/admin/overview`,
+  adminUsers: `${API_BASE}/api/admin/users`,
+  adminUser: (id) => `${API_BASE}/api/admin/users/${id}`,
+  adminResetPwd: (id) => `${API_BASE}/api/admin/users/${id}/reset-password`,
   // 收藏看板（保存/列出/删除洞察快照，需 Bearer、按 user_id 隔离）
   insights: `${API_BASE}/api/insights`,
   insight: (id) => `${API_BASE}/api/insights/${id}`,

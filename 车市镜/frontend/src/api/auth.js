@@ -28,6 +28,14 @@ export function clearSession() {
 export function getStoredUser() {
   try { return JSON.parse(localStorage.getItem(USER_KEY) || 'null') } catch { return null }
 }
+/** 局部更新已存用户（如改昵称后同步会话里的展示）。 */
+export function updateStoredUser(patch) {
+  try {
+    const u = { ...(getStoredUser() || {}), ...patch }
+    localStorage.setItem(USER_KEY, JSON.stringify(u))
+    return u
+  } catch { return getStoredUser() }
+}
 /** 给受保护请求加鉴权头；SSE 因走 fetch 同样可带（方案B）。 */
 export function authHeaders() {
   const t = getToken()
@@ -35,19 +43,24 @@ export function authHeaders() {
 }
 
 // —— mock 实现（localStorage 存账号，纯前端，可离线 demo）—— //
-function loadMockUsers() {
+// 离线也能体验管理员：用户名 'admin' 注册/登录即获 admin 角色。
+export function loadMockUsers() {
   try { return JSON.parse(localStorage.getItem(MOCK_USERS_KEY) || '{}') } catch { return {} }
 }
-function saveMockUsers(u) { try { localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(u)) } catch {} }
+export function saveMockUsers(u) { try { localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(u)) } catch {} }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const _pub = (rec) => ({ id: rec.id, username: rec.username, nickname: rec.nickname,
+  role: rec.role || (rec.username === 'admin' ? 'admin' : 'user'), disabled: !!rec.disabled })
 
 async function mockRegister({ username, password, nickname }) {
   await sleep(400)
   const users = loadMockUsers()
   if (users[username]) throw new Error('该账号已存在，请直接登录')
-  const user = { id: 'u_' + Date.now().toString(36), username, nickname: nickname || username }
-  users[username] = { ...user, password }
+  const rec = { id: 'u_' + Date.now().toString(36), username, nickname: nickname || username,
+    password, role: username === 'admin' ? 'admin' : 'user', disabled: false }
+  users[username] = rec
   saveMockUsers(users)
+  const user = _pub(rec)
   return { access_token: `mock.${user.id}.${Math.random().toString(36).slice(2)}`, user }
 }
 async function mockLogin({ username, password }) {
@@ -55,7 +68,8 @@ async function mockLogin({ username, password }) {
   const users = loadMockUsers()
   const rec = users[username]
   if (!rec || rec.password !== password) throw new Error('账号或密码不正确')
-  const user = { id: rec.id, username: rec.username, nickname: rec.nickname }
+  if (rec.disabled) throw new Error('账号已被禁用，请联系管理员')
+  const user = _pub(rec)
   return { access_token: `mock.${user.id}.${Math.random().toString(36).slice(2)}`, user }
 }
 

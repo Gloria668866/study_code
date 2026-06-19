@@ -11,6 +11,12 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bi_demo.db")
 MAX_SQL_RETRY = int(os.getenv("MAX_SQL_RETRY", "2"))
 
+# Text2SQL 语义自校验（§4.6）：SQL 能跑通 ≠ 语义对（"能跑但答非所问"是重试环救不了的那 ~22%）。
+# 开启后：SQL 执行成功 → 让 LLM 核对"结果是否真的回答了问题(口径/过滤/聚合)" → 不匹配且仍有重试预算
+# 则把原因回喂 fix_sql 重生成。代价 = 每条成功的数据查询多 1 次 LLM 调用（+延迟/成本）；
+# **FAIL-OPEN**：校验自身异常一律放行，绝不比不校验更差。demo 想要快可设 SEMANTIC_CHECK=off。
+SEMANTIC_CHECK = os.getenv("SEMANTIC_CHECK", "on").lower() in ("1", "true", "on", "yes")
+
 # 应用层（读写）库：用户/会话/消息/知识库元数据。
 # 与只读分析库 DATABASE_URL（Text2SQL 只查不写）分开，避免把可写表混进只读分析库。
 # 生产：PostgreSQL（与 pgvector 同栈）；本地：单独 SQLite 文件 app.db。
@@ -34,6 +40,12 @@ RAG_DATABASE_URL = os.getenv(
     "RAG_DATABASE_URL",
     "postgresql://app_rw:app_rw_pass_change_me@localhost:5432/app",  # psycopg 原生串(非 +psycopg)
 )
+
+# RAG 存储后端：'local'(默认) = SQLite+numpy 本地向量库（免 pgvector/Docker，开箱即用）；
+# 'pg' = PostgreSQL+pgvector（生产/全栈）。两者接口一致（pg.py ↔ local_store.py），切换不动检索逻辑。
+RAG_BACKEND = os.getenv("RAG_BACKEND", "local").lower()
+# 本地向量库文件（RAG_BACKEND=local 时用）。种子语料 + 用户上传都落这里。
+LOCAL_KB_PATH = os.getenv("LOCAL_KB_PATH", "data/local_kb.sqlite")
 
 # 对象存储（MinIO）：上传/爬取的原始文件先落 MinIO，再异步解析。
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")

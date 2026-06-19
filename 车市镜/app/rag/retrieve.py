@@ -10,10 +10,16 @@
 """
 import json
 
-from . import pg, embed
+from . import embed
 from ..llm import chat
 from ..config import (RECALL_VEC_K, RECALL_KW_K, RRF_K, RERANK_TOP_K,
-                      CONTEXT_TOKEN_BUDGET, MAX_PARENTS, RERANK_SCORE_MIN)
+                      CONTEXT_TOKEN_BUDGET, MAX_PARENTS, RERANK_SCORE_MIN, RAG_BACKEND)
+
+# 存储后端：'pg'(pgvector) ↔ 'local'(SQLite+numpy)，两者接口一致，按 config 切换。
+if RAG_BACKEND == "pg":
+    from . import pg as store
+else:
+    from . import local_store as store
 
 NO_ANSWER = "未在知识库中找到相关内容，建议上传相关文档后再试。"
 
@@ -31,8 +37,8 @@ def _rrf_fuse(*ranked_lists):
 def hybrid_recall(user_id: int, query: str):
     """向量召回 + 全文召回 → RRF 融合（均按 user_id + deleted_at 预过滤）。返回去重子块列表（带 rrf 分）。"""
     qv = embed.embed_query(query)
-    vec_hits = pg.search(user_id, qv, top_k=RECALL_VEC_K)
-    kw_hits = pg.keyword_search(user_id, query, top_k=RECALL_KW_K)
+    vec_hits = store.search(user_id, qv, top_k=RECALL_VEC_K) if qv is not None else []  # 无向量模型→纯词法
+    kw_hits = store.keyword_search(user_id, query, top_k=RECALL_KW_K)
     fused = _rrf_fuse(vec_hits, kw_hits)
     by_id = {h["chunk_id"]: h for h in (vec_hits + kw_hits)}    # 子块元数据（任一路即可）
     out = []
@@ -69,7 +75,7 @@ def merge_parents(top_children):
         parent_score[pid] = max(parent_score.get(pid, 0.0), c["score_final"])
         parent_hits.setdefault(pid, []).append(c["chunk_id"])
 
-    parents = pg.get_parents_full(parent_score.keys())
+    parents = store.get_parents_full(parent_score.keys())
     items = []
     for pid, sc in parent_score.items():
         p = parents.get(pid)
@@ -102,7 +108,7 @@ def _merge_adjacent(items):
         by_doc.setdefault(it["doc_id"], []).append(it)
     merged = []
     for doc_id, group in by_doc.items():
-        order = pg.doc_parent_order(doc_id)
+        order = store.doc_parent_order(doc_id)
         pos = {cid: i for i, cid in enumerate(order)}
         group.sort(key=lambda x: pos.get(x["chunk_id"], x["chunk_index"]))
         cur = None

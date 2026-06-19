@@ -18,6 +18,8 @@ CREATE TABLE users (
     username       VARCHAR(64) UNIQUE NOT NULL,
     password_hash  VARCHAR(255) NOT NULL,           -- bcrypt 哈希，绝不存明文
     nickname       VARCHAR(64),
+    role           VARCHAR(16) DEFAULT 'user',       -- 'user' / 'admin'
+    disabled       BOOLEAN DEFAULT FALSE,            -- 禁用后不能登录
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login_at  TIMESTAMP
 );

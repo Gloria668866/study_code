@@ -58,13 +58,14 @@ async function liveDelete(docId) {
   return jsonOrThrow(r)
 }
 
-// —— mock 实现（模块级内存表，模拟「上传→解析中→就绪」）—— //
+// —— mock 实现（文档列表取自 kb_corpus.json：data/build_local_kb.py 从真实语料导出，非占位假数据）—— //
+import corpus from './kb_corpus.json'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-let _mockDocs = [
-  { id: 7, filename: '2025中国新能源汽车市场展望.pdf', status: 'ready', file_type: 'pdf', chunk_count: 142, created_at: '2026-05-20' },
-  { id: 11, filename: '乘联会月度零售数据点评.pdf', status: 'ready', file_type: 'pdf', chunk_count: 68, created_at: '2026-05-21' },
-]
-let _mockSeq = 100
+let _mockDocs = corpus.docs.map((d) => ({
+  id: d.id, filename: d.filename || (d.title + '.md'), status: 'ready',
+  file_type: d.fileType || 'md', chunk_count: d.chunkCount, created_at: d.createdAt,
+}))
+let _mockSeq = 1000
 
 async function mockList() { await sleep(200); return _mockDocs.map(normDoc) }
 async function mockUpload(file) {

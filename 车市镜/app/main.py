@@ -40,7 +40,9 @@ app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW_ORIGINS,
                    allow_methods=["*"], allow_headers=["*"],
                    allow_credentials=(CORS_ALLOW_ORIGINS != ["*"]))
 app.include_router(auth_router)
-# RAG 知识库路由（上传/列表/删除/问答，PG+pgvector）。延迟导入避免无 RAG 依赖时启动失败。
+from .admin import router as admin_router          # 管理员后台（用户管理）
+app.include_router(admin_router)
+# RAG 知识库路由（上传/列表/删除/问答）。延迟导入避免无 RAG 依赖时启动失败。
 try:
     from .kb import router as kb_router
     app.include_router(kb_router)
@@ -50,7 +52,19 @@ except Exception as _e:  # noqa: BLE001
 
 @app.on_event("startup")
 def _startup():
-    init_db()  # 幂等建应用层表（users/conversation/message/kb_document/saved_insight/shared_insight）
+    init_db()  # 幂等建应用层表 + 轻量迁移（补 users.role/disabled 列）
+    # 确保有管理员账号（演示开箱即用；ADMIN_USERNAME/ADMIN_PASSWORD 可在 .env 配置）。
+    from .auth import bootstrap_admin
+    from .database import SessionLocal
+    _db = SessionLocal()
+    try:
+        action, uname = bootstrap_admin(_db)
+        logger.info(f"[admin] 管理员账号 '{uname}': {action}")
+    finally:
+        _db.close()
+    import os as _os
+    if _os.getenv("ADMIN_PASSWORD", "admin123") == "admin123":
+        logger.warning("管理员默认密码仍是 admin123！上线/公开演示前请在 .env 设置 ADMIN_PASSWORD。")
     # 安全自检：JWT 弱密钥在生产环境是致命的（任何人可伪造任意用户 token）。
     if JWT_SECRET == "dev-insecure-change-me":
         logger.warning("JWT_SECRET 仍是默认弱密钥！上线/演示前务必在 .env 设置随机强密钥（如 openssl rand -hex 32）")

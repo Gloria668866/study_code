@@ -6,7 +6,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, func
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, Boolean, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -21,6 +21,8 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)  # bcrypt 哈希，绝不存明文
     nickname: Mapped[Optional[str]] = mapped_column(String(64))
+    role: Mapped[Optional[str]] = mapped_column(String(16), default="user")        # 'user' / 'admin'
+    disabled: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)        # 禁用后不能登录
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 

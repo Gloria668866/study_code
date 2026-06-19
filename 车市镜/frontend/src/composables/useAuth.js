@@ -11,6 +11,13 @@ const state = reactive({
 })
 
 const isAuthed = computed(() => !!state.token && !!state.user)
+const isAdmin = computed(() => (state.user?.role || 'user') === 'admin')
+
+/** 更新当前用户（改昵称后同步展示），持久化到 localStorage。 */
+function setUser(patch) {
+  state.user = { ...(state.user || {}), ...patch }
+  authApi.updateStoredUser(patch)
+}
 
 async function login(payload) {
   state.pending = true; state.error = ''
@@ -44,5 +51,5 @@ function logout() {
 }
 
 export function useAuth() {
-  return { state, isAuthed, login, register, logout }
+  return { state, isAuthed, isAdmin, login, register, logout, setUser }
 }

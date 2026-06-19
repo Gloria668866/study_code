@@ -2,10 +2,16 @@
 
 为什么用状态图而非 if-else（§7.1）：
 - 显式 State + 节点 + 条件边，复杂多步流程可控可回溯；
-- 天然表达「环」——Text2SQL 自校验重试是带环流程（exec_sql ⇄ fix_sql）；
-- 支持「挂起等人」——clarify 节点反问后 END，用户回答再重入；
+- 天然表达「环」——Text2SQL 自校验重试是带环流程（exec_sql ⇄ fix_sql ⇄ verify_sql）；
+- 支持「澄清-续问」——clarify 节点反问后结束本轮（→END）；用户的补充作为带 history 的**新一轮请求**
+  进来，intent_router 借 history 理解指代后重新路由（**对话级澄清**，状态持久化在 message 表/前端会话）；
 - 支持「并行 join」——hybrid 并行跑两个脑链，compose 合并；
 - 可观测——每个节点把决策/SQL/检索/重试写入 State.trace。
+
+> 关于「图级挂起/恢复」（面试高频追问）：LangGraph 提供 checkpointer（MemorySaver/PostgresSaver）+ interrupt()
+> 做真正的图内断点恢复。本项目**刻意没用**——澄清是对话级的（状态已落 message 表 + 前端会话），再叠一层
+> LangGraph 检查点是重复持久化，且 SSE 流式下管理恢复点复杂度高、收益低。**何时该上**：若要做图内多轮
+> 挂起（如分步收集多个查询槽位、Human-in-the-loop 审批），再引入 checkpointer + thread_id=conversation_id。
 
 状态流转（§7.5）：
   intent_router ─┬─ sql    → schema_link → gen_sql → exec_sql ─┬─成功→ chart → insight ┐
@@ -43,6 +49,7 @@ class AgentState(TypedDict, total=False):
     rows: list                          # 结果行
     sql_error: str                      # 执行/校验错误
     retry_count: int                    # 已重试次数
+    sql_verified: bool                  # 语义自校验结果（结果是否真的回答了问题）
     chunks: list                        # RAG 归并后的父块上下文
     citations: list                     # 引用
     has_answer: bool                    # RAG 是否有依据
@@ -76,12 +83,19 @@ def _history_block(state) -> str:
 
 
 # ============================================================ 节点（§7.3）
-_SQL_KW = ("销量", "排名", "卖", "多少", "trend", "趋势", "环比", "同比", "top", "前十", "前5", "几辆", "对比", "占比")
-_RAG_KW = ("报告", "政策", "为什么", "怎么看", "解读", "口碑", "评价", "怎么样", "观点", "分析师", "续航怎么", "原因")
+# 只把「几乎不会在闲聊里出现」的强领域词放进快速通道；像「多少/对比/怎么样/为什么/原因」太泛，
+# 会把『你多少岁』『今天天气怎么样』误判成 sql/rag，故移出规则、交给 LLM 兜底分类（更准，代价仅一次调用）。
+_SQL_KW = ("销量", "排名", "卖", "trend", "趋势", "环比", "同比", "top", "前十", "前5", "几辆", "占比")
+_RAG_KW = ("报告", "政策", "怎么看", "解读", "口碑", "观点", "分析师", "续航怎么", "评测")
+# 明显的问候/闲聊/超纲词：命中且无领域信号 → 直接友好兜底，连 LLM 都不调（省成本）
+_CHAT_KW = ("你好", "您好", "在吗", "吃饭", "谢谢", "多谢", "再见", "拜拜", "晚安", "早安",
+            "笑话", "你是谁", "你叫", "无聊", "天气", "几点", "哈哈", "傻", "爱你")
 
 
 def intent_router(state: AgentState):
-    """意图识别：规则前置（命中即跳过 LLM 省成本）→ 否则 LLM few-shot 分类（§7.4）。"""
+    """意图识别：规则前置（命中即跳过 LLM 省成本）→ 否则 LLM few-shot 分类（§7.4）。
+    新增 chat 意图：问候/闲聊/与车市无关的问题（如『你吃饭了吗』）友好兜底，
+    不再因「LLM 兜底默认 sql」而被拖去硬生成 SQL、画出莫名其妙的图。"""
     q = state["question"]
     has_sql = any(k in q for k in _SQL_KW)
     has_rag = any(k in q for k in _RAG_KW)
@@ -91,25 +105,38 @@ def intent_router(state: AgentState):
         intent = "sql"
     elif has_rag:
         intent = "rag"
+    elif any(k in q for k in _CHAT_KW):
+        intent = "chat"                              # 明显闲聊/超纲且无领域信号 → 友好兜底（省一次 LLM）
     else:
-        # LLM few-shot 兜底分类（含歧义→clarify 的示例，§7.4）
+        # LLM few-shot 兜底分类（含 chat / clarify；默认 clarify 而非瞎猜 sql，§7.4）
         out = chat([
             {"role": "system", "content":
              "判断问题意图，只回一个词：\n"
-             "sql = 查数据/统计/排名/趋势（如『Top10 销量』『环比多少』）\n"
+             "sql = 查数据/统计/排名/趋势（如『Top10 销量』『比亚迪卖了多少』）\n"
              "rag = 问文档/政策/口碑/为什么（如『报告对渗透率怎么预测』『这车口碑如何』）\n"
              "hybrid = 既要数据又要解读（如『比亚迪销量趋势如何，行业怎么看』）\n"
-             "clarify = 信息不足/口径不清，无法判断（如『哪个车好』——好指销量？口碑？价格？不清楚）\n"
+             "chat = 问候/闲聊/与新能源汽车市场无关（如『你好』『你吃饭了吗』『讲个笑话』『你是谁』）\n"
+             "clarify = 与车市相关但信息不足/口径不清（如『哪个车好』——好指销量？口碑？价格？不清楚）\n"
              "结合近期对话理解指代（如上轮问销量、本轮『那丰田呢』应判 sql）。\n"
-             "只回 sql / rag / hybrid / clarify 之一。"},
+             "只回 sql / rag / hybrid / chat / clarify 之一。"},
             {"role": "user", "content": _history_block(state) + q},
         ], temperature=0.0).strip().lower()
-        intent = next((k for k in ("hybrid", "clarify", "sql", "rag") if k in out), "sql")
+        intent = next((k for k in ("hybrid", "clarify", "chat", "sql", "rag") if k in out), "clarify")
     upd = {"intent": intent, "retry_count": 0,
            "trace": [_t("intent_router", intent=intent, rule_hit=has_sql or has_rag)]}
     if intent == "clarify":
         upd["clarify_question"] = "你的问题信息不足，请补充：想了解销量数据，还是文档/政策解读？具体哪个车系或品牌？"
     return upd
+
+
+def chitchat(state: AgentState):
+    """问候/闲聊/超纲 → 友好说明能力边界、引导回车市话题（→ END）。不查数据、不出图。"""
+    return {"final_answer":
+            "我是「车市镜」——专注新能源汽车销量数据分析与行业知识问答的助手，暂时只聊车市相关的话题～\n"
+            "你可以这样问我：\n"
+            "· 数据：『2025年纯电销量 Top10』『比亚迪各车系今年卖了多少』\n"
+            "· 解读：『小米SU7 口碑怎么样』『最近的购车补贴政策怎么说』",
+            "trace": [_t("chitchat")]}
 
 
 def clarify(state: AgentState):
@@ -158,6 +185,40 @@ def fix_sql(state: AgentState):
     sql = _extract_sql(chat(msgs, temperature=0.0))
     n = state.get("retry_count", 0) + 1
     return {"sql": sql, "retry_count": n, "trace": [_t("fix_sql", attempt=n, sql=sql)]}
+
+
+_VERIFY_SYS = (
+    "你是 SQL 审核员。给你一个『自然语言问题』和这条 SQL『实际查询结果(列+前几行)』，"
+    "判断结果是否真的回答了问题——重点看：过滤口径(品牌/车系/时间/能源类型)有没有错、"
+    "聚合维度对不对、是不是答非所问。结果为空但问题本身合理(可能就是没数据)也算 ok=true。"
+    "只输出 JSON：{\"ok\": true/false, \"reason\": \"简短中文原因\"}，不要解释、不要代码块。"
+)
+
+
+def verify_sql(state: AgentState):
+    """Text2SQL 语义自校验（§4.6）：SQL 能跑通≠语义对。把『能跑但答非所问』纳入闭环。
+    FAIL-OPEN：开关关闭 / 无数据 / 已无重试预算 / 校验自身异常 —— 一律放行，绝不比不校验更差。"""
+    from .config import SEMANTIC_CHECK
+    rows = state.get("rows") or []
+    # 不校验的情形：开关关 / 空结果(无可核对) / 重试预算已耗尽(再判也回不了 fix_sql)
+    if not SEMANTIC_CHECK or not rows or state.get("retry_count", 0) >= MAX_SQL_RETRY:
+        return {"sql_verified": True, "trace": [_t("verify_sql", checked=False)]}
+    try:
+        out = chat([
+            {"role": "system", "content": _VERIFY_SYS},
+            {"role": "user", "content": f"问题：{state['question']}\nSQL：{state.get('sql', '')}\n"
+                                        f"列：{state.get('cols')}\n结果(前5行)：{str(rows[:5])}"}],
+            temperature=0.0)
+        import json as _json
+        m = _json.loads(out[out.find("{"):out.rfind("}") + 1])
+        if bool(m.get("ok", True)):
+            return {"sql_verified": True, "trace": [_t("verify_sql", ok=True)]}
+        # 语义不匹配 → 把「为什么不匹配」当错误回喂 fix_sql 重生成（复用现成重试环）
+        return {"sql_verified": False,
+                "sql_error": f"结果未正确回答问题：{m.get('reason', '口径/过滤/聚合可能有误')}。请修正 SQL。",
+                "trace": [_t("verify_sql", ok=False, reason=str(m.get("reason"))[:80])]}
+    except Exception as e:  # FAIL-OPEN：校验出任何问题都放行正常结果
+        return {"sql_verified": True, "trace": [_t("verify_sql", error=str(e)[:80])]}
 
 
 def chart(state: AgentState):
@@ -260,21 +321,29 @@ def route_intent(state: AgentState):
         return "rag_retrieve"
     if intent == "hybrid":
         return ["schema_link", "rag_retrieve"]    # 并行 fan-out（两个脑链同时跑）
+    if intent == "chat":
+        return "chitchat"
     return "clarify"
 
 
 def route_exec(state: AgentState):
     if not state.get("sql_error"):
-        return "chart"                              # 成功 → 出图
+        return "verify_sql"                         # 成功 → 先语义自校验（再出图）
     if state.get("retry_count", 0) < MAX_SQL_RETRY:
         return "fix_sql"                            # 失败可重试 → 修正环
     return "insight"                                # 重试耗尽 → 降级（insight 节点出降级话术）
 
 
+def route_verify(state: AgentState):
+    if state.get("sql_verified", True):
+        return "chart"                              # 语义 OK → 出图
+    return "fix_sql"                                # 语义不匹配 → 回 fix_sql 重生成（verify 已确认仍有预算）
+
+
 # ============================================================ 建图
 def build_graph():
     g = StateGraph(AgentState)
-    for fn in (intent_router, clarify, schema_link, gen_sql, exec_sql, fix_sql,
+    for fn in (intent_router, clarify, chitchat, schema_link, gen_sql, exec_sql, fix_sql, verify_sql,
                chart, insight, rag_retrieve, rag_answer):
         g.add_node(fn.__name__, fn)
     # compose 是「并行 join」节点：defer=True 让它延到所有在途分支(数据脑链+知识脑链)都完成才跑一次，
@@ -283,12 +352,13 @@ def build_graph():
 
     g.add_edge(START, "intent_router")
     g.add_conditional_edges("intent_router", route_intent,
-                            ["schema_link", "rag_retrieve", "clarify"])
+                            ["schema_link", "rag_retrieve", "clarify", "chitchat"])
     # 数据脑链
     g.add_edge("schema_link", "gen_sql")
     g.add_edge("gen_sql", "exec_sql")
-    g.add_conditional_edges("exec_sql", route_exec, ["chart", "fix_sql", "insight"])
-    g.add_edge("fix_sql", "exec_sql")               # 重试环
+    g.add_conditional_edges("exec_sql", route_exec, ["verify_sql", "fix_sql", "insight"])
+    g.add_conditional_edges("verify_sql", route_verify, ["chart", "fix_sql"])  # 语义校验 → 出图 / 回修
+    g.add_edge("fix_sql", "exec_sql")               # 重试环（执行报错 + 语义不匹配 共用）
     g.add_edge("chart", "insight")
     g.add_edge("insight", "compose")
     # 知识脑链
@@ -297,6 +367,7 @@ def build_graph():
     # 收口
     g.add_edge("compose", END)
     g.add_edge("clarify", END)
+    g.add_edge("chitchat", END)
     return g.compile()
 
 
