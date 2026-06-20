@@ -33,4 +33,7 @@ export const ENDPOINTS = {
   // 分享（创建只读分享 + 公开读取，公开读取免鉴权）
   share: `${API_BASE}/api/share`,
   publicShare: (token) => `${API_BASE}/api/public/share/${token}`,
+  // 车型报价（查 fact_price 实采数据）
+  prices: `${API_BASE}/api/prices`,
+  priceBrands: `${API_BASE}/api/prices/brands`,
 }

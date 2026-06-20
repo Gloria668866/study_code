@@ -8,6 +8,7 @@ import Composer from './components/Composer.vue'
 import QuickSuggest from './components/QuickSuggest.vue'
 import KnowledgeBaseModal from './components/KnowledgeBaseModal.vue'
 import BoardModal from './components/BoardModal.vue'
+import PriceModal from './components/PriceModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import AdminModal from './components/AdminModal.vue'
 import LoginView from './components/LoginView.vue'
@@ -24,6 +25,7 @@ const showBoard = ref(false)
 const showSide = ref(false)
 const showSettings = ref(false)
 const showAdmin = ref(false)
+const showPrices = ref(false)
 
 function onAsk(q) { if (!activeId.value) newConversation(); send(q) }
 function onSelect(id) { selectConversation(id); showSide.value = false }
@@ -53,7 +55,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <Sidebar :class="{ 'side-open': showSide }"
       :conversations="conversations" :activeId="activeId" :user="auth.user" :boardCount="boardItems.length" :isAdmin="isAdmin"
       @new="onNew" @select="onSelect" @delete="deleteConversation" @rename="renameConversation"
-      @open-kb="showKb = true" @open-board="showBoard = true" @logout="logout"
+      @open-kb="showKb = true" @open-board="showBoard = true" @open-prices="showPrices = true" @logout="logout"
       @open-settings="showSettings = true" @open-admin="showAdmin = true" />
     <div v-if="showSide" class="side-mask" @click="showSide = false"></div>
 
@@ -73,6 +75,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
     <KnowledgeBaseModal v-if="showKb" @close="showKb = false" />
     <BoardModal v-if="showBoard" @close="showBoard = false" @ask="(q) => { showBoard = false; onAsk(q) }" />
+    <PriceModal v-if="showPrices" @close="showPrices = false" @ask="(q) => { showPrices = false; onAsk(q) }" />
     <SettingsModal v-if="showSettings" @close="showSettings = false" />
     <AdminModal v-if="showAdmin" @close="showAdmin = false" />
   </div>

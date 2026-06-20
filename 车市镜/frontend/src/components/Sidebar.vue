@@ -10,7 +10,7 @@ const props = defineProps({
   boardCount: { type: Number, default: 0 },
   isAdmin: { type: Boolean, default: false },
 })
-const emit = defineEmits(['new', 'select', 'open-kb', 'open-board', 'delete', 'rename', 'logout', 'open-settings', 'open-admin'])
+const emit = defineEmits(['new', 'select', 'open-kb', 'open-board', 'open-prices', 'delete', 'rename', 'logout', 'open-settings', 'open-admin'])
 
 const kw = ref('')
 const filtered = computed(() => {
@@ -77,6 +77,10 @@ function finishRename(id) { const v = renameValue.value.trim(); if (v) emit('ren
     <div class="links">
       <button class="side-link" @click="emit('open-board')">
         <span class="star">★</span> 收藏看板 <span v-if="boardCount" class="badge">{{ boardCount }}</span>
+      </button>
+      <button class="side-link" @click="emit('open-prices')">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2.5 2.5h5l6 6-5 5-6-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="5.3" cy="5.3" r="1" fill="currentColor"/></svg>
+        车型报价
       </button>
       <button class="side-link" @click="emit('open-kb')">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 2.5h7l3 3V13.5H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9.5 2.5V6h3.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>

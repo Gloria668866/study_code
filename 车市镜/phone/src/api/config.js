@@ -17,6 +17,7 @@ export const API = {
   kbList: `${HOST}/api/kb/list`,
   kbUpload: `${HOST}/api/kb/upload`,
   kbDelete: (id) => `${HOST}/api/kb/${id}`,
+  prices: `${HOST}/api/prices`,
 }
 
 // Token 存储

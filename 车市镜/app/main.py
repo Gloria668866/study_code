@@ -19,11 +19,12 @@ import threading
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from .graph import run_agent, stream_agent
+from .db import engine as bi_engine          # 只读分析库（车型报价直接查）
 from .auth import router as auth_router, get_current_user
 from .database import get_db, init_db
 from .models import User, Conversation, Message, SavedInsight, SharedInsight
@@ -357,3 +358,45 @@ def share_public(token: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "分享不存在或已过期")
     return {"title": sh.title, "question": sh.question, "intent": sh.intent,
             "payload": sh.payload, "created_at": sh.created_at.isoformat() if sh.created_at else None}
+
+
+# ---------------------------------------------------------------- 车型报价
+_PRICE_SORT = {"price": "pmax", "brand": "brand", "series": "series"}
+
+
+@app.get("/api/prices")
+def prices(q: str = "", brand: str = "", sort: str = "price", order: str = "desc",
+           limit: int = 80, user: User = Depends(get_current_user)):
+    """车型报价：查 fact_price + dim_series + dim_brand（懂车帝实采）。支持搜索/品牌过滤/排序。
+    排序列与方向都走白名单，搜索用绑定参数（防注入）。"""
+    col = _PRICE_SORT.get(sort, "pmax")
+    direction = "ASC" if str(order).lower() == "asc" else "DESC"
+    where = ["p.guide_price_max IS NOT NULL"]
+    params = {"limit": min(max(int(limit), 1), 300)}
+    if q:
+        where.append("(b.brand_name LIKE :kw OR s.series_name LIKE :kw)"); params["kw"] = f"%{q}%"
+    if brand:
+        where.append("b.brand_name = :brand"); params["brand"] = brand
+    sql = (
+        "SELECT b.brand_name AS brand, s.series_name AS series, s.segment AS segment, s.endurance_km AS endurance, "
+        "MAX(p.guide_price_min) AS pmin, MAX(p.guide_price_max) AS pmax, "
+        "MAX(p.price_text) AS price_text, MAX(p.descender_price) AS descender "
+        "FROM fact_price p JOIN dim_series s ON s.series_id=p.series_id JOIN dim_brand b ON b.brand_id=s.brand_id "
+        f"WHERE {' AND '.join(where)} GROUP BY s.series_id ORDER BY {col} {direction} LIMIT :limit"
+    )
+    with bi_engine.connect() as conn:
+        rows = [dict(r._mapping) for r in conn.execute(sql_text(sql), params)]
+    return {"count": len(rows), "items": [
+        {"brand": r["brand"], "series": r["series"], "segment": r["segment"], "endurance": r["endurance"],
+         "min": r["pmin"], "max": r["pmax"], "priceText": r["price_text"], "descender": r["descender"] or 0}
+        for r in rows]}
+
+
+@app.get("/api/prices/brands")
+def price_brands(user: User = Depends(get_current_user)):
+    """有报价的品牌列表（前端筛选下拉用）。"""
+    sql = ("SELECT DISTINCT b.brand_name AS brand FROM fact_price p "
+           "JOIN dim_series s ON s.series_id=p.series_id JOIN dim_brand b ON b.brand_id=s.brand_id "
+           "WHERE p.guide_price_max IS NOT NULL ORDER BY b.brand_name")
+    with bi_engine.connect() as conn:
+        return {"brands": [r[0] for r in conn.execute(sql_text(sql))]}

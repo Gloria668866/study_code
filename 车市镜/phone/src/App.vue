@@ -4,6 +4,7 @@ import { useAuth, isAuthed } from './composables/useAuth.js'
 import { useChat } from './composables/useChat.js'
 import ChartCard from './components/ChartCard.vue'
 import { listDocs } from './api/kb.js'
+import { listPrices } from './api/prices.js'
 
 const { state: auth, login, register, logout } = useAuth()
 const { conversations, activeId, messages, sending, newConversation, deleteConversation, send, stop, loadHistory } = useChat()
@@ -28,6 +29,14 @@ onMounted(() => { if (isAuthed.value) { loadHistory(); loadKb() } })
 const kbList = ref([]); const kbLoading = ref(false)
 async function loadKb() { kbLoading.value = true; try { kbList.value = await listDocs() } catch {} kbLoading.value = false }
 watch(tab, (t) => { if (t === 'kb' && !kbList.value.length) loadKb() })
+
+// 探索：品牌 / 报价
+const exploreTab = ref('brand')
+const priceItems = ref([]); const priceKw = ref(''); const priceLoading = ref(false)
+let _pt = null
+async function loadPrices() { priceLoading.value = true; try { priceItems.value = (await listPrices({ q: priceKw.value.trim(), limit: 60 })).items } catch {} priceLoading.value = false }
+watch(priceKw, () => { clearTimeout(_pt); _pt = setTimeout(loadPrices, 220) })
+watch(exploreTab, (t) => { if (t === 'price' && !priceItems.value.length) loadPrices() })
 
 // 登录
 const loginMode = ref('login')
@@ -95,13 +104,38 @@ const isAdmin = computed(() => (auth.user?.role || 'user') === 'admin')
 
       <!-- 探索页 -->
       <div v-if="tab === 'explore'" class="page">
-        <div class="page-title">探索品牌</div>
-        <p class="muted sm">点任意品牌，直接查它的车系销量。</p>
-        <div class="brand-grid">
-          <button v-for="b in ['比亚迪','特斯拉','理想','蔚来','小鹏','零跑','哪吒','问界','极氪','小米','吉利','长安','奇瑞','长城','五菱','埃安']" :key="b" class="brand-card" @click="onAsk(b+'各车系今年销量')">
-            <span class="brand-name">{{ b }}</span><span class="brand-go">销量 →</span>
-          </button>
+        <div class="page-title">探索</div>
+        <div class="ex-seg">
+          <button :class="{ on: exploreTab === 'brand' }" @click="exploreTab = 'brand'">品牌</button>
+          <button :class="{ on: exploreTab === 'price' }" @click="exploreTab = 'price'">车型报价</button>
         </div>
+
+        <template v-if="exploreTab === 'brand'">
+          <p class="muted sm">点任意品牌，直接查它的车系销量。</p>
+          <div class="brand-grid">
+            <button v-for="b in ['比亚迪','特斯拉','理想','蔚来','小鹏','零跑','哪吒','问界','极氪','小米','吉利','长安','奇瑞','长城','五菱','埃安']" :key="b" class="brand-card" @click="onAsk(b+'各车系今年销量')">
+              <span class="brand-name">{{ b }}</span><span class="brand-go">销量 →</span>
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="price-search">
+            <span class="ps-ic">⌕</span>
+            <input v-model="priceKw" placeholder="搜索品牌或车系…" />
+          </div>
+          <p class="muted sm" style="margin:0 2px 10px">懂车帝实采指导价 · 点车型可深入提问</p>
+          <p v-if="priceLoading" class="muted sm" style="text-align:center;padding:16px">加载中…</p>
+          <div v-else class="price-list">
+            <div v-for="it in priceItems" :key="it.brand+it.series" class="price-row" @click="onAsk(`${it.series}的价格和配置怎么样`)">
+              <div class="pr-meta">
+                <div class="pr-nm">{{ it.series }}<span class="pr-bd">{{ it.brand }}</span></div>
+                <div class="pr-tags"><span v-if="it.segment" class="pr-tag">{{ it.segment }}</span><span v-if="it.endurance" class="pr-tag mono">续航{{ it.endurance }}km</span></div>
+              </div>
+              <div class="pr-price"><span class="pr-pt mono">{{ it.priceText }}</span><span v-if="it.descender>0" class="pr-down mono">↓{{ it.descender }}万</span></div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- 对话页 -->
@@ -255,6 +289,23 @@ const isAdmin = computed(() => (auth.user?.role || 'user') === 'admin')
 .brand-card:active { background: var(--accent-wash); border-color: var(--accent-border); }
 .brand-name { font-size: 14.5px; font-weight: 700; color: var(--ink); }
 .brand-go { font-size: 11px; color: var(--ink-3); }
+.ex-seg { display: flex; gap: 3px; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--r-md); padding: 3px; margin: 6px 0 14px; }
+.ex-seg button { flex: 1; padding: 8px; font-size: 13.5px; font-weight: 700; color: var(--ink-3); border-radius: 9px; }
+.ex-seg button.on { background: var(--bg); color: var(--ink); box-shadow: var(--sh-sm); }
+.price-search { display: flex; align-items: center; gap: 9px; padding: 11px 14px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--r-md); margin-bottom: 10px; box-shadow: var(--sh-sm); }
+.price-search .ps-ic { color: var(--accent); font-size: 16px; }
+.price-search input { flex: 1; border: none; outline: none; background: transparent; font-size: 14px; }
+.price-list { display: flex; flex-direction: column; }
+.price-row { display: flex; align-items: center; gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--line-soft); }
+.price-row:active { background: var(--bg-subtle); }
+.pr-meta { flex: 1; min-width: 0; }
+.pr-nm { font-size: 14.5px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 7px; }
+.pr-nm .pr-bd { font-size: 11px; font-weight: 500; color: var(--ink-3); }
+.pr-tags { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+.pr-tag { font-size: 10px; color: var(--ink-2); background: var(--bg-sunken); padding: 1px 7px; border-radius: 5px; }
+.pr-price { text-align: right; flex: none; }
+.pr-pt { font-size: 15px; font-weight: 600; color: var(--accent); }
+.pr-down { display: block; font-size: 10px; color: var(--up); margin-top: 2px; }
 
 /* 对话 */
 .chat-page { display: flex; flex-direction: column; padding: 0; height: 100%; }
