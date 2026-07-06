@@ -161,75 +161,27 @@ def _history_block(state) -> str:
     )
 
 
-# ============================================================ 结构化意图分类（NLU 核心）
-_INTENT_SYSTEM = """\
-你是新能源汽车市场情报系统的 NLU 模块。分析用户问题，返回严格 JSON（无其他文字）。
+# ── Backwards-compat shims (test_graph.py imports these) ──────────────────────
+from .nlu import get_cfg as _get_nlu_cfg
 
-JSON 格式：
-{"intent":"sql|rag|hybrid|chat|clarify","confidence":0.95,"entities":{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[]},"is_complete":true,"missing_slots":[],"normalized_question":"规范化后的问题"}
 
-意图定义：
-- sql: 需要查结构化数据库（销量/价格/排名/趋势/对比/统计）
-- rag: 需要从文档/研报/政策/口碑评论检索（为什么/解读/分析/评价/预测/观点）
-- hybrid: 既需要数据统计又需要文档解读
-- chat: 问候/闲聊/完全无关新能源汽车市场
-- clarify: 问题模糊/实体不足/口径不清
+def _get_config_list(key):
+    return _get_nlu_cfg().get(key, [])
 
-is_complete（sql/hybrid 类适用）规则：
-- 有且只有「销量」「排名」等指标词但无任何锚点实体（品牌/车系/能源类型/具体时间/Top N）→ false
-- 有实体记忆可补全代词的追问 → is_complete=true（如「那辆车呢」+实体记忆有品牌 → true）
-- 实体记忆为空且问题有无法消解的代词 → false
 
-实体规范化：su7→SU7, byd→比亚迪, BYD→比亚迪, 今年→2026年, 去年→2025年
-"""
-
-_NO_DATA_SIGNALS = frozenset([
-    "no data", "not found", "no results", "no records",
-    "未查询到", "没有找到", "0条结果", "不在覆盖范围", "不在数据库",
-    "未在知识库中检索到", "未检索到",
-])
-# 明确的问候词：≤8字且以这些词开头 → 直接 chat，不调 LLM（省成本）
-_GREETING_PREFIXES = ("你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+_GREETING_PREFIXES = tuple(_get_config_list("greeting_prefixes")) or (
+    "你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+_NO_DATA_SIGNALS = frozenset(_get_config_list("no_data_signals")) or frozenset([
+    "未查询到", "没有找到", "未检索到"])
 
 
 def _classify_intent(question: str, context_block: str) -> dict:
-    """
-    结构化 LLM 分类，始终运行（非关键词兜底）。
-    返回: {intent, confidence, entities, is_complete, missing_slots, normalized_question}
-    FAIL-SAFE: 任何异常返回 clarify，不崩溃。
-    """
-    prompt = (context_block + question) if context_block else question
-    try:
-        raw = chat([
-            {"role": "system", "content": _INTENT_SYSTEM},
-            {"role": "user", "content": prompt},
-        ], temperature=0.0)
-        s, e = raw.find("{"), raw.rfind("}") + 1
-        if s < 0 or e <= s:
-            raise ValueError("no JSON in LLM response")
-        result = _json.loads(raw[s:e])
-        intent = result.get("intent", "clarify")
-        if intent not in ("sql", "rag", "hybrid", "chat", "clarify"):
-            intent = "clarify"
-        return {
-            "intent": intent,
-            "confidence": min(1.0, max(0.0, float(result.get("confidence", 0.8)))),
-            "entities": result.get("entities") or {},
-            "is_complete": bool(result.get("is_complete", True)),
-            "missing_slots": result.get("missing_slots") or [],
-            "normalized_question": result.get("normalized_question") or question,
-        }
-    except Exception:
-        return {
-            "intent": "clarify", "confidence": 0.5, "entities": {},
-            "is_complete": False, "missing_slots": ["意图解析失败"],
-            "normalized_question": question,
-        }
+    """Shim: delegates to nlu.classify(). Kept for test_graph.py compatibility."""
+    from .nlu import classify as _nlu_classify
+    return _nlu_classify(question=question, context_block=context_block)
 
 
-def _build_clarify_question(classification: dict) -> str:
-    """根据缺失槽位生成针对性的澄清问题。"""
-    slots = classification.get("missing_slots") or []
+def _build_clarify_question_from_slots(slots: list) -> str:
     base = "您的问题信息不够完整，需要补充以下内容才能给出准确答案：\n\n"
     if slots:
         base += "\n".join(f"· {s}" for s in slots) + "\n\n"
@@ -244,72 +196,61 @@ def _build_clarify_question(classification: dict) -> str:
 
 # ============================================================ 意图路由节点
 def intent_router(state: AgentState):
-    """
-    企业级 NLU 意图路由：
-    1. 纯问候词预筛（≤8字，不调LLM）
-    2. 无数据追问保护（上轮无数据则强制 rag/clarify）
-    3. 结构化 LLM 分类（始终运行，返回 intent+entities+confidence+is_complete）
-    4. 不完整 sql/hybrid → clarify
-    5. 更新跨轮实体记忆
-
-    对比旧版：不再依赖 12 个关键词数组和 50 词硬编码实体表。
-    """
+    """意图路由：委托给 nlu.classify()，保留跨轮实体记忆更新。"""
     q = state["question"]
     history = state.get("history") or []
 
-    # ── 步骤1：纯问候词快速通道（≤8字才触发，避免"你好，比亚迪今年卖了多少"被误判）
-    q_s = q.strip()
-    if len(q_s) <= 8 and any(q_s.startswith(g) for g in _GREETING_PREFIXES):
-        return {
-            "intent": "chat", "confidence": 1.0, "entities": {},
-            "active_entities": state.get("active_entities") or {},
-            "retry_count": 0,
-            "trace": [_t("intent_router", intent="chat", path="greeting_precheck")],
-        }
+    active_ents = state.get("active_entities") or _build_active_entities_from_history(history)
+    ctx = _history_block({**state, "active_entities": active_ents})
 
-    # ── 步骤2：无数据追问保护（上轮回复含无数据信号 → 强制 rag 解释覆盖范围）
     last_assistant = ""
     for m in reversed(history):
         if m.get("role") == "assistant":
             last_assistant = (m.get("content") or "")[:300]
             break
-    force_rag = any(sig in last_assistant for sig in _NO_DATA_SIGNALS)
 
-    # ── 步骤3：构建上下文（含实体记忆）并调用结构化 LLM 分类
-    # 如果 active_entities 未初始化，从历史提取
-    active_ents = state.get("active_entities") or _build_active_entities_from_history(history)
-    ctx = _history_block({**state, "active_entities": active_ents})
-    cls = _classify_intent(q, ctx)
+    result = _classify_intent(q, ctx)
 
-    # ── 步骤4：guard 覆盖
-    intent = cls["intent"]
-    if force_rag and intent in ("sql", "hybrid"):
-        intent = "rag"
-        cls["confidence"] = min(cls["confidence"], 0.7)
+    intent = result["intent"]
+    entities = result.get("entities") or {}
+    source = result.get("source", "")
 
-    # ── 步骤5：不完整 → clarify（is_complete=False 且 sql/hybrid 类）
-    if intent in ("sql", "hybrid") and not cls["is_complete"]:
+    # No-data guard: last assistant had no-data signal → override sql/hybrid → rag
+    if any(sig in last_assistant for sig in _NO_DATA_SIGNALS):
+        if intent in ("sql", "hybrid"):
+            intent = "rag"
+            result["confidence"] = min(result.get("confidence", 0.8), 0.7)
+
+    # Slot completeness: is_complete=False + sql/hybrid → clarify
+    if intent in ("sql", "hybrid") and not result.get("is_complete", True):
         intent = "clarify"
 
-    # ── 步骤6：更新跨轮实体记忆
-    new_active = _merge_entities(active_ents, cls["entities"])
+    new_active = _merge_entities(active_ents, entities)
+
+    # Build trace: distinguish greeting fast-path from LLM-classified
+    if source == "layer1_greeting":
+        trace_entry = _t("intent_router", intent=intent, path="greeting_precheck")
+        confidence = result.get("confidence", 1.0)
+    else:
+        confidence = result.get("confidence", 0.8)
+        trace_entry = _t("intent_router",
+                         intent=intent,
+                         confidence=round(confidence, 2),
+                         entities=entities,
+                         is_complete=result.get("is_complete", True),
+                         llm_classified=True)
 
     upd: dict = {
         "intent": intent,
-        "confidence": cls["confidence"],
-        "entities": cls["entities"],
+        "confidence": confidence,
+        "entities": entities,
         "active_entities": new_active,
-        "normalized_question": cls["normalized_question"],
+        "normalized_question": result.get("normalized_question", q),
         "retry_count": 0,
-        "trace": [_t("intent_router",
-                     intent=intent,
-                     confidence=round(cls["confidence"], 2),
-                     entities=cls["entities"],
-                     is_complete=cls["is_complete"],
-                     llm_classified=True)],
+        "trace": [trace_entry],
     }
     if intent == "clarify":
-        upd["clarify_question"] = _build_clarify_question(cls)
+        upd["clarify_question"] = _build_clarify_question_from_slots(result.get("missing_slots") or [])
     return upd
 
 
