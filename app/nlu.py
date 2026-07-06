@@ -201,6 +201,7 @@ JSON 格式：
 {"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"规范化后的问题"}
 
 规范化规则：su7/SU7不变, byd/BYD→比亚迪, 今年→2026年, 去年→2025年, 前年→2024年
+只从当前问题提取实体，忽略历史记录中的实体。
 """
 
 
@@ -272,7 +273,11 @@ def classify(
               "energy_types": [], "normalized_question": question}
 
     # Layer 5 (before completeness check so forced rag skips slot check)
-    final_intent = layer5_business_rules(l2["intent"], question)
+    # Only apply business rules to data intents, not chat/clarify
+    if l2["intent"] in ("sql", "hybrid", "rag"):
+        final_intent = layer5_business_rules(l2["intent"], question)
+    else:
+        final_intent = l2["intent"]
 
     # Layer 4
     is_complete, missing = layer4_check_completeness(final_intent, l3, question)
@@ -283,7 +288,7 @@ def classify(
         "intent": final_intent,
         "confidence": l2["confidence"],
         "entities": {k: l3[k] for k in ("brands", "models", "time", "metrics", "energy_types")},
-        "is_complete": is_complete or final_intent not in ("sql", "hybrid"),
+        "is_complete": is_complete,
         "missing_slots": missing,
         "normalized_question": l3.get("normalized_question", question),
         "source": l2["source"],

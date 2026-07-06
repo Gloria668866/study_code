@@ -249,3 +249,14 @@ def test_classify_low_confidence_becomes_clarify(monkeypatch):
 
     assert result["intent"] == "clarify"
     assert result["source"] == "confidence_gate"
+
+
+def test_classify_chat_greeting_shortcircuits_before_llm(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+    with patch("app.nlu.chat") as mock_chat:
+        result = nlu.classify("你好", last_assistant="")
+    assert result["intent"] == "chat"
+    assert result["confidence"] == 1.0
+    mock_chat.assert_not_called()
