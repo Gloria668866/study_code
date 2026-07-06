@@ -1,5 +1,6 @@
 """Unit tests for app/nlu.py — layers that don't need LLM."""
 import pytest
+from unittest.mock import patch
 
 
 # ── Layer 1 ───────────────────────────────────────────────────────────────────
@@ -98,3 +99,57 @@ def test_confidence_gate_fails_ambiguous():
     from app.nlu import _confidence_gate
     # gap = 0.75 - 0.65 = 0.10 < threshold 0.15
     assert _confidence_gate({"confidence": 0.75, "top2_confidence": 0.65}) is False
+
+
+# ── Layer 2 ───────────────────────────────────────────────────────────────────
+
+def test_layer2_classify_sql(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+    with patch("app.nlu.chat", return_value='{"intent":"sql","confidence":0.95,"top2_intent":"hybrid","top2_confidence":0.08}'):
+        result = nlu.layer2_classify("比亚迪2025年销量", "")
+    assert result["intent"] == "sql"
+    assert result["confidence"] == 0.95
+    assert result["source"] == "layer2_llm"
+
+
+def test_layer2_classify_force_rag_overrides_sql(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+    with patch("app.nlu.chat", return_value='{"intent":"sql","confidence":0.90,"top2_intent":"rag","top2_confidence":0.10}'):
+        result = nlu.layer2_classify("进一步分析", "", force_rag=True)
+    assert result["intent"] == "rag"
+
+
+def test_layer2_classify_llm_error_returns_clarify(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+    with patch("app.nlu.chat", side_effect=Exception("timeout")):
+        result = nlu.layer2_classify("比亚迪销量", "")
+    assert result["intent"] == "clarify"
+    assert result["source"] == "layer2_fallback"
+
+
+def test_layer2_few_shot_retrieval_returns_examples(monkeypatch):
+    import numpy as np
+    from app import nlu
+    fake_emb = np.random.rand(3, 4).astype(np.float32)
+    # normalize
+    fake_emb = fake_emb / np.linalg.norm(fake_emb, axis=1, keepdims=True)
+    fake_examples = [
+        {"question": "比亚迪销量", "intent": "sql"},
+        {"question": "口碑怎么样", "intent": "rag"},
+        {"question": "你好", "intent": "chat"},
+    ]
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", fake_emb)
+    monkeypatch.setattr(nlu, "_few_shot_examples", fake_examples)
+
+    query_vec = np.random.rand(4).astype(np.float32)
+    query_vec = query_vec / np.linalg.norm(query_vec)
+    with patch("app.nlu.embed_query", return_value=query_vec.tolist()):
+        results = nlu._retrieve_few_shot("销量", top_k=2)
+    assert len(results) == 2
+    assert all("intent" in r for r in results)
