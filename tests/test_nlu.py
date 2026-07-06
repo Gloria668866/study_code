@@ -153,3 +153,99 @@ def test_layer2_few_shot_retrieval_returns_examples(monkeypatch):
         results = nlu._retrieve_few_shot("销量", top_k=2)
     assert len(results) == 2
     assert all("intent" in r for r in results)
+
+
+# ── Layer 3 ───────────────────────────────────────────────────────────────────
+
+def test_layer3_extracts_brand(monkeypatch):
+    from app import nlu
+    with patch("app.nlu.chat", return_value='{"brands":["比亚迪"],"models":[],"time":["2025年"],"metrics":[],"energy_types":[],"normalized_question":"比亚迪2025年销量"}'):
+        result = nlu.layer3_extract_entities("比亚迪2025年销量", "")
+    assert result["brands"] == ["比亚迪"]
+    assert result["time"] == ["2025年"]
+    assert result["normalized_question"] == "比亚迪2025年销量"
+
+
+def test_layer3_llm_error_returns_empty(monkeypatch):
+    from app import nlu
+    with patch("app.nlu.chat", side_effect=Exception("timeout")):
+        result = nlu.layer3_extract_entities("比亚迪销量", "")
+    assert result["brands"] == []
+    assert result["normalized_question"] == "比亚迪销量"
+
+
+# ── classify() 完整流程 ────────────────────────────────────────────────────────
+
+def test_classify_full_sql_flow(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+
+    classify_resp = '{"intent":"sql","confidence":0.92,"top2_intent":"hybrid","top2_confidence":0.05}'
+    entity_resp = '{"brands":["比亚迪"],"models":[],"time":["2025年"],"metrics":[],"energy_types":[],"normalized_question":"比亚迪2025年销量"}'
+
+    call_count = {"n": 0}
+    def mock_chat(msgs, **kw):
+        call_count["n"] += 1
+        return classify_resp if call_count["n"] == 1 else entity_resp
+
+    with patch("app.nlu.chat", side_effect=mock_chat):
+        result = nlu.classify("比亚迪2025年销量")
+
+    assert result["intent"] == "sql"
+    assert result["entities"]["brands"] == ["比亚迪"]
+    assert result["is_complete"] is True
+    assert result["missing_slots"] == []
+
+
+def test_classify_incomplete_sql_becomes_clarify(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+
+    classify_resp = '{"intent":"sql","confidence":0.88,"top2_intent":"clarify","top2_confidence":0.05}'
+    entity_resp = '{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"销量排名"}'
+
+    call_count = {"n": 0}
+    def mock_chat(msgs, **kw):
+        call_count["n"] += 1
+        return classify_resp if call_count["n"] == 1 else entity_resp
+
+    with patch("app.nlu.chat", side_effect=mock_chat):
+        result = nlu.classify("销量排名")
+
+    assert result["intent"] == "clarify"
+    assert len(result["missing_slots"]) > 0
+
+
+def test_classify_policy_question_forced_rag(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+
+    classify_resp = '{"intent":"sql","confidence":0.85,"top2_intent":"rag","top2_confidence":0.10}'
+    entity_resp = '{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"购置税政策"}'
+
+    call_count = {"n": 0}
+    def mock_chat(msgs, **kw):
+        call_count["n"] += 1
+        return classify_resp if call_count["n"] == 1 else entity_resp
+
+    with patch("app.nlu.chat", side_effect=mock_chat):
+        result = nlu.classify("最新的购置税政策有哪些")
+
+    assert result["intent"] == "rag"
+
+
+def test_classify_low_confidence_becomes_clarify(monkeypatch):
+    from app import nlu
+    monkeypatch.setattr(nlu, "_few_shot_embeddings", None)
+    monkeypatch.setattr(nlu, "_few_shot_examples", None)
+
+    classify_resp = '{"intent":"sql","confidence":0.55,"top2_intent":"rag","top2_confidence":0.40}'
+
+    with patch("app.nlu.chat", return_value=classify_resp):
+        result = nlu.classify("那个数据")
+
+    assert result["intent"] == "clarify"
+    assert result["source"] == "confidence_gate"

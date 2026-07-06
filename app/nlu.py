@@ -190,3 +190,101 @@ def layer2_classify(question: str, context_block: str = "", force_rag: bool = Fa
         return {"intent": "clarify", "confidence": 0.5,
                 "top2_intent": "", "top2_confidence": 0.0,
                 "source": "layer2_fallback"}
+
+
+# ── Layer 3: 实体抽取（独立 LLM 调用）────────────────────────────────────────
+
+_ENTITY_SYS = """\
+你是实体提取器，只做实体提取和规范化，不做意图判断。从新能源汽车问题中提取实体，返回严格 JSON（无其他文字）。
+
+JSON 格式：
+{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"规范化后的问题"}
+
+规范化规则：su7/SU7不变, byd/BYD→比亚迪, 今年→2026年, 去年→2025年, 前年→2024年
+"""
+
+
+def layer3_extract_entities(question: str, context_block: str = "") -> dict:
+    """独立 LLM 实体抽取。FAIL-SAFE：异常返回空实体 + 原始问题。"""
+    prompt = (context_block + "\n\n" if context_block else "") + question
+    empty = {"brands": [], "models": [], "time": [], "metrics": [],
+             "energy_types": [], "normalized_question": question}
+    try:
+        raw = chat([
+            {"role": "system", "content": _ENTITY_SYS},
+            {"role": "user", "content": prompt},
+        ], temperature=0.0)
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        if s < 0 or e <= s:
+            return empty
+        r = json.loads(raw[s:e])
+        return {
+            "brands": r.get("brands") or [],
+            "models": r.get("models") or [],
+            "time": r.get("time") or [],
+            "metrics": r.get("metrics") or [],
+            "energy_types": r.get("energy_types") or [],
+            "normalized_question": r.get("normalized_question") or question,
+        }
+    except Exception:
+        return empty
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def classify(
+    question: str,
+    history: list = None,
+    context_block: str = "",
+    last_assistant: str = "",
+) -> dict:
+    """5层 NLU 完整流程。
+
+    Returns dict with keys:
+        intent, confidence, entities, is_complete, missing_slots,
+        normalized_question, source
+    """
+    _ = history  # reserved for future multi-turn use; context_block already built by caller
+
+    # Layer 1
+    l1 = layer1_prefilter(question, last_assistant)
+    if l1 and "intent" in l1:
+        return {"intent": l1["intent"], "confidence": l1["confidence"],
+                "entities": {}, "is_complete": True, "missing_slots": [],
+                "normalized_question": question, "source": l1["source"]}
+    force_rag = bool(l1 and l1.get("force_rag"))
+
+    # Layer 2
+    l2 = layer2_classify(question, context_block, force_rag=force_rag)
+
+    # Confidence gate → clarify if ambiguous
+    if not _confidence_gate(l2):
+        return {"intent": "clarify", "confidence": l2["confidence"],
+                "entities": {}, "is_complete": False,
+                "missing_slots": ["问题意图不明确，请描述得更具体"],
+                "normalized_question": question, "source": "confidence_gate"}
+
+    # Layer 3 (only for data-related intents)
+    if l2["intent"] in ("sql", "rag", "hybrid"):
+        l3 = layer3_extract_entities(question, context_block)
+    else:
+        l3 = {"brands": [], "models": [], "time": [], "metrics": [],
+              "energy_types": [], "normalized_question": question}
+
+    # Layer 5 (before completeness check so forced rag skips slot check)
+    final_intent = layer5_business_rules(l2["intent"], question)
+
+    # Layer 4
+    is_complete, missing = layer4_check_completeness(final_intent, l3, question)
+    if not is_complete and final_intent in ("sql", "hybrid"):
+        final_intent = "clarify"
+
+    return {
+        "intent": final_intent,
+        "confidence": l2["confidence"],
+        "entities": {k: l3[k] for k in ("brands", "models", "time", "metrics", "energy_types")},
+        "is_complete": is_complete or final_intent not in ("sql", "hybrid"),
+        "missing_slots": missing,
+        "normalized_question": l3.get("normalized_question", question),
+        "source": l2["source"],
+    }
