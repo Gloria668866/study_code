@@ -1,7 +1,5 @@
 """Unit tests for app/nlu.py — layers that don't need LLM."""
 import pytest
-from unittest.mock import patch, MagicMock
-import numpy as np
 
 
 # ── Layer 1 ───────────────────────────────────────────────────────────────────

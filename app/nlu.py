@@ -6,7 +6,6 @@ Layer 3: 实体抽取（独立 LLM 调用，单一任务）
 Layer 4: 槽位完整性检查（规则，来自 YAML）
 Layer 5: 业务规则覆盖（来自 YAML，业务同学可维护）
 """
-import json
 import threading
 from pathlib import Path
 
@@ -96,6 +95,6 @@ def _confidence_gate(cls: dict) -> bool:
     if cls.get("confidence", 0) < threshold:
         return False
     top2 = cls.get("top2_confidence", 0.0)
-    if top2 and (cls["confidence"] - top2) < gap_min:
+    if (cls["confidence"] - top2) < gap_min:
         return False
     return True
