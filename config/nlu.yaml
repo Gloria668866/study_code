@@ -66,7 +66,6 @@ nlu:
     explicit_metric_keywords:
       - "top"
       - "Top"
-      - "排名"
       - "对比"
       - "比较"
       - "最多"
