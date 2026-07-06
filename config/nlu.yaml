@@ -1,0 +1,84 @@
+nlu:
+  confidence_threshold: 0.70   # below this → clarify
+  ambiguity_gap: 0.15          # if top1_conf - top2_conf < this → clarify
+
+  greeting_prefixes:
+    - "你好"
+    - "您好"
+    - "早安"
+    - "晚安"
+    - "早上好"
+    - "再见"
+    - "拜拜"
+
+  no_data_signals:
+    - "no data"
+    - "not found"
+    - "no results"
+    - "no records"
+    - "未查询到"
+    - "没有找到"
+    - "0条结果"
+    - "不在覆盖范围"
+    - "不在数据库"
+    - "未在知识库中检索到"
+    - "未检索到"
+
+  few_shot_examples:
+    - question: "比亚迪2025年各月销量是多少"
+      intent: sql
+    - question: "特斯拉Model Y今年卖了多少台"
+      intent: sql
+    - question: "2025年纯电Top10排名"
+      intent: sql
+    - question: "理想L9和小米SU7谁卖得多"
+      intent: sql
+    - question: "小米SU7口碑怎么样"
+      intent: rag
+    - question: "最近的新能源购车补贴政策有哪些"
+      intent: rag
+    - question: "比亚迪为什么能卖那么好"
+      intent: rag
+    - question: "问界M9的用户评价如何"
+      intent: rag
+    - question: "理想L9销量如何，为什么这么好卖"
+      intent: hybrid
+    - question: "2025年纯电销量Top5，分析各品牌优势"
+      intent: hybrid
+    - question: "你好"
+      intent: chat
+    - question: "谢谢"
+      intent: chat
+    - question: "销量排名"
+      intent: clarify
+    - question: "那辆车"
+      intent: clarify
+    - question: "最近的数据"
+      intent: clarify
+
+  slot_rules:
+    sql_requires_one_of:
+      - brands
+      - models
+      - time
+      - energy_types
+      - explicit_metric
+    explicit_metric_keywords:
+      - "top"
+      - "Top"
+      - "排名"
+      - "对比"
+      - "比较"
+      - "最多"
+      - "第一"
+      - "销量榜"
+      - "增长"
+      - "下滑"
+
+  business_rules:
+    - if_contains: ["政策", "补贴", "购置税"]
+      force_intent: rag
+    - if_contains: ["法规", "标准", "规定", "条例"]
+      force_intent: rag
+    - if_contains: ["为什么", "原因", "分析", "解读", "预测", "展望"]
+      force_intent: rag
