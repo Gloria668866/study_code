@@ -3,7 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
+dist/
+build/
 .env
+.env.local
 venv/
 .venv/
 
@@ -27,3 +31,39 @@ logs/
 # Temp files
 tmp/
 temp/
+
+# Large model files
+model/
+*.pth
+*.bin
+*.safetensors
+*.gguf
+
+# Audio/Video
+voice/
+uploaded_files/
+*.wav
+*.mp3
+*.mp4
+*.flac
+
+# Database
+*.db
+*.sqlite
+
+# FFmpeg binaries
+tool/ffmpeg*/
+ffmpeg*/
+
+# Credentials
+cookie/
+*.json.state
+
+# Data directories (large)
+data/
+
+# Pictures
+picture/
+
+# Jupyter
+.ipynb_checkpoints/

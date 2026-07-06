@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EduRAG Interview Dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --panel-soft: #f8fafc;
+  --ink: #172033;
+  --muted: #647084;
+  --line: #dce3ee;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --green: #0f8b6f;
+  --amber: #a16207;
+  --red: #b42318;
+  --violet: #6d28d9;
+  --shadow: 0 14px 35px rgba(20, 35, 70, 0.08);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+}
+
+button, input, select { font: inherit; }
+button {
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+  height: 38px;
+  padding: 0 14px;
+}
+button:hover { background: var(--primary-dark); }
+button:disabled { cursor: not-allowed; opacity: .55; }
+.ghost {
+  background: #eef2f7;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.ghost:hover { background: #e5ebf4; }
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, .92);
+}
+.brand h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+.brand p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.top-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.session {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: minmax(480px, 1fr) 420px;
+  gap: 18px;
+  padding: 18px 24px;
+  min-height: 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 560px;
+}
+.chat-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+  overflow: hidden;
+  border-radius: 8px 8px 0 0;
+}
+.status-cell {
+  background: var(--panel-soft);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+.value {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.messages {
+  padding: 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.empty-state {
+  margin: auto;
+  max-width: 560px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-state strong {
+  display: block;
+  color: var(--ink);
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+.message {
+  max-width: min(760px, 88%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 13px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.message.user {
+  align-self: flex-end;
+  background: #eaf1ff;
+  border-color: #c9d8ff;
+}
+.message.assistant {
+  align-self: flex-start;
+  background: #ffffff;
+}
+.message.error {
+  border-color: #f5b4ae;
+  background: #fff4f2;
+}
+.message-role {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.message-content p { margin: 0 0 10px; }
+.message-content p:last-child { margin-bottom: 0; }
+.message-content pre {
+  white-space: pre-wrap;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.composer {
+  border-top: 1px solid var(--line);
+  padding: 14px;
+  background: var(--panel-soft);
+  border-radius: 0 0 8px 8px;
+}
+.examples {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.example {
+  height: 30px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.query-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 82px;
+  gap: 10px;
+}
+select, input {
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0 10px;
+  min-width: 0;
+}
+input:focus, select:focus {
+  outline: 2px solid rgba(37, 99, 235, .18);
+  border-color: var(--primary);
+}
+
+.inspect-panel {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  min-height: 560px;
+}
+.inspect-head {
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.inspect-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.route-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #edf7f3;
+  color: var(--green);
+  font-weight: 700;
+  font-size: 13px;
+}
+.trace-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.trace-item {
+  background: var(--panel-soft);
+  padding: 12px;
+  min-width: 0;
+}
+.trace-item.wide { grid-column: 1 / -1; }
+.trace-value {
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.docs {
+  overflow-y: auto;
+  padding: 14px;
+}
+.doc {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+.doc-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.doc-source {
+  color: var(--violet);
+  font-weight: 700;
+  font-size: 13px;
+}
+.doc-score {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.doc-preview {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.doc-id {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 24px 18px;
+}
+.metric {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px 14px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.metric strong {
+  display: block;
+  font-size: 18px;
+  margin-top: 4px;
+}
+.metric small {
+  color: var(--muted);
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.green { color: var(--green); }
+.amber { color: var(--amber); }
+.red { color: var(--red); }
+.violet { color: var(--violet); }
+
+.typing {
+  display: inline-block;
+  width: 8px;
+  height: 18px;
+  margin-left: 2px;
+  background: var(--primary);
+  vertical-align: middle;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+@media (max-width: 1100px) {
+  .main { grid-template-columns: 1fr; }
+  .inspect-panel { min-height: 420px; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .topbar { align-items: flex-start; padding: 14px; }
+  .main { padding: 12px; gap: 12px; }
+  .metrics { padding: 0 12px 12px; grid-template-columns: 1fr; }
+  .chat-status { grid-template-columns: 1fr 1fr; }
+  .query-row { grid-template-columns: 1fr; }
+  .message { max-width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <h1>EduRAG 面试展示看板</h1>
+      <p>FastAPI · Milvus · BGE-M3 · BGE-Reranker · DeepSeek · RAGAS</p>
+    </div>
+    <div class="top-actions">
+      <span class="session">Session <span id="session-id"></span></span>
+      <button class="ghost" id="new-session" type="button">新会话</button>
+      <button class="ghost" id="clear-chat" type="button">清空</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="panel chat-panel">
+      <div class="chat-status">
+        <div class="status-cell">
+          <span class="label">本轮路由</span>
+          <span class="value" id="status-route">待查询</span>
+        </div>
+        <div class="status-cell">
+          <span class="label">意图分类</span>
+          <span class="value" id="status-classification">-</span>
+        </div>
+        <div class="status-cell">
+          <span class="label">RAG 判断</span>
+          <span class="value" id="status-rag">-</span>
+        </div>
+        <div class="status-cell">
+          <span class="label">响应耗时</span>
+          <span class="value" id="status-latency">-</span>
+        </div>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="composer">
+        <div class="examples" id="examples">
+          <button class="example" type="button" data-query="人工智能就业课的课程版本是什么？" data-source="ai">AI 课程版本</button>
+          <button class="example" type="button" data-query="Java 的 SpringBoot 课程包含哪些内容？" data-source="java">Java 课程</button>
+          <button class="example" type="button" data-query="比较 AI 和大数据课程的就业方向" data-source="">多主题检索</button>
+        </div>
+        <form class="query-row" id="query-form">
+          <select id="source-select">
+            <option value="">全部学科</option>
+          </select>
+          <input id="query-input" type="text" placeholder="输入问题" autocomplete="off" required>
+          <button id="send-btn" type="submit">发送</button>
+        </form>
+      </div>
+    </section>
+
+    <aside class="panel inspect-panel">
+      <div class="inspect-head">
+        <h2>检索追踪</h2>
+        <span class="route-badge" id="route-badge">等待查询</span>
+      </div>
+      <div class="trace-grid">
+        <div class="trace-item">
+          <span class="label">缓存命中</span>
+          <span class="trace-value" id="trace-cache">-</span>
+        </div>
+        <div class="trace-item">
+          <span class="label">BM25 分数</span>
+          <span class="trace-value" id="trace-bm25">-</span>
+        </div>
+        <div class="trace-item">
+          <span class="label">检索策略</span>
+          <span class="trace-value" id="trace-strategy">-</span>
+        </div>
+        <div class="trace-item">
+          <span class="label">召回文档</span>
+          <span class="trace-value" id="trace-count">-</span>
+        </div>
+        <div class="trace-item wide">
+          <span class="label">BM25 最相近问题</span>
+          <span class="trace-value" id="trace-best">-</span>
+        </div>
+        <div class="trace-item wide">
+          <span class="label">上下文预览</span>
+          <span class="trace-value" id="trace-context">-</span>
+        </div>
+      </div>
+      <div class="docs" id="docs"></div>
+    </aside>
+  </main>
+
+  <section class="metrics" id="metrics">
+    <div class="metric"><small>服务状态</small><strong id="metric-health">检查中</strong></div>
+    <div class="metric"><small>Faithfulness</small><strong id="metric-faithfulness">-</strong></div>
+    <div class="metric"><small>Answer Relevancy</small><strong id="metric-relevancy">-</strong></div>
+    <div class="metric"><small>Context Recall</small><strong id="metric-recall">-</strong></div>
+  </section>
+</div>
+
+<script>
+const state = {
+  sessionId: localStorage.getItem('edurag.sessionId') || makeSessionId(),
+  messages: JSON.parse(localStorage.getItem('edurag.messages') || '[]'),
+  currentAssistant: null,
+  currentAnswer: '',
+  currentError: false,
+  busy: false
+};
+
+const els = {
+  sessionId: document.getElementById('session-id'),
+  messages: document.getElementById('messages'),
+  form: document.getElementById('query-form'),
+  input: document.getElementById('query-input'),
+  sendBtn: document.getElementById('send-btn'),
+  source: document.getElementById('source-select'),
+  route: document.getElementById('status-route'),
+  classification: document.getElementById('status-classification'),
+  rag: document.getElementById('status-rag'),
+  latency: document.getElementById('status-latency'),
+  badge: document.getElementById('route-badge'),
+  cache: document.getElementById('trace-cache'),
+  bm25: document.getElementById('trace-bm25'),
+  best: document.getElementById('trace-best'),
+  strategy: document.getElementById('trace-strategy'),
+  count: document.getElementById('trace-count'),
+  context: document.getElementById('trace-context'),
+  docs: document.getElementById('docs'),
+  health: document.getElementById('metric-health'),
+  faithfulness: document.getElementById('metric-faithfulness'),
+  relevancy: document.getElementById('metric-relevancy'),
+  recall: document.getElementById('metric-recall')
+};
+
+localStorage.setItem('edurag.sessionId', state.sessionId);
+els.sessionId.textContent = shortId(state.sessionId);
+
+function makeSessionId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function shortId(id) {
+  return String(id).slice(0, 8);
+}
+
+function saveMessages() {
+  localStorage.setItem('edurag.messages', JSON.stringify(state.messages.slice(-12)));
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
+function renderText(text) {
+  const escaped = escapeHtml(text || '');
+  return escaped
+    .split(/\n{2,}/)
+    .map(part => `<p>${part.replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
+function renderMessages() {
+  els.messages.innerHTML = '';
+  if (!state.messages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = '<strong>教育知识库问答</strong><span>输入问题后，这里展示回答；右侧同步展示路由、意图、检索和召回文档。</span>';
+    els.messages.appendChild(empty);
+    return;
+  }
+  state.messages.forEach(msg => addMessageNode(msg.role, msg.text, msg.error, false));
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function addMessageNode(role, text, error = false, persist = true) {
+  const empty = els.messages.querySelector('.empty-state');
+  if (empty) empty.remove();
+  const node = document.createElement('div');
+  node.className = `message ${role}${error ? ' error' : ''}`;
+  node.innerHTML = `
+    <div class="message-role">${role === 'user' ? '用户' : 'EduRAG'}</div>
+    <div class="message-content">${renderText(text)}${role === 'assistant' && state.busy ? '<span class="typing"></span>' : ''}</div>
+  `;
+  els.messages.appendChild(node);
+  els.messages.scrollTop = els.messages.scrollHeight;
+  if (persist) {
+    state.messages.push({ role, text, error });
+    saveMessages();
+  }
+  return node;
+}
+
+function updateAssistantNode(node, text, error = false, typing = true) {
+  if (!node) return;
+  node.classList.toggle('error', error);
+  const content = node.querySelector('.message-content');
+  content.innerHTML = renderText(text) + (typing ? '<span class="typing"></span>' : '');
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function routeLabel(route) {
+  const labels = {
+    start: '开始处理',
+    redis_cache: 'Redis 缓存',
+    mysql_bm25: 'MySQL BM25',
+    bm25_miss: 'BM25 未命中',
+    bm25_error: 'BM25 异常',
+    rag: 'RAG 检索生成',
+    direct_llm: '直接 LLM',
+    invalid_query: '无效输入',
+    error: '异常'
+  };
+  return labels[route] || route || '-';
+}
+
+function boolLabel(value) {
+  if (value === true) return '是';
+  if (value === false) return '否';
+  return '-';
+}
+
+function scoreLabel(value) {
+  return value === null || value === undefined || value === '' ? '-' : Number(value).toFixed(4);
+}
+
+function updateMeta(meta = {}) {
+  els.route.textContent = routeLabel(meta.route);
+  els.badge.textContent = routeLabel(meta.route);
+  els.classification.textContent = meta.classification || '-';
+  els.rag.textContent = boolLabel(meta.need_rag);
+  els.latency.textContent = meta.latency_ms ? `${meta.latency_ms} ms` : '-';
+  els.cache.textContent = boolLabel(meta.cache_hit);
+  els.bm25.textContent = scoreLabel(meta.bm25_score);
+  els.best.textContent = meta.best_question || '-';
+  els.strategy.textContent = meta.strategy || '-';
+  els.count.textContent = meta.retrieval_count ?? '-';
+  els.context.textContent = meta.context_preview || '-';
+  renderDocs(meta.docs || []);
+}
+
+function renderDocs(docs) {
+  if (!docs.length) {
+    els.docs.innerHTML = '<div class="doc"><div class="doc-preview">暂无召回文档</div></div>';
+    return;
+  }
+  els.docs.innerHTML = docs.map((doc, index) => `
+    <div class="doc">
+      <div class="doc-top">
+        <span class="doc-source">#${index + 1} ${escapeHtml(doc.source || 'unknown')}</span>
+        <span class="doc-score">hybrid ${scoreLabel(doc.hybrid_score)} · rerank ${scoreLabel(doc.rerank_score)}</span>
+      </div>
+      <div class="doc-preview">${escapeHtml(doc.preview || '')}</div>
+      <div class="doc-id">parent: ${escapeHtml(doc.parent_id || '-')} · chunk: ${escapeHtml(doc.chunk_id || '-')}</div>
+    </div>
+  `).join('');
+}
+
+async function loadSources() {
+  const resp = await fetch('/api/sources');
+  const data = await resp.json();
+  (data.sources || []).forEach(source => {
+    const option = document.createElement('option');
+    if (typeof source === 'string') {
+      option.value = source;
+      option.textContent = source.toUpperCase();
+    } else {
+      option.value = source.value;
+      option.textContent = source.label;
+    }
+    els.source.appendChild(option);
+  });
+}
+
+async function loadProjectInfo() {
+  try {
+    const [healthResp, projectResp] = await Promise.all([
+      fetch('/api/health'),
+      fetch('/api/project')
+    ]);
+    const health = await healthResp.json();
+    const project = await projectResp.json();
+    els.health.textContent = health.status === 'ok' ? 'Online' : (health.status === 'warning' ? 'No Collection' : 'Error');
+    els.health.className = health.status === 'ok' ? 'green' : (health.status === 'warning' ? 'amber' : 'red');
+    els.faithfulness.textContent = scoreLabel(project.ragas?.faithfulness);
+    els.relevancy.textContent = scoreLabel(project.ragas?.answer_relevancy);
+    els.recall.textContent = scoreLabel(project.ragas?.context_recall);
+  } catch (err) {
+    els.health.textContent = 'Error';
+    els.health.className = 'red';
+  }
+}
+
+async function sendQuery(query, source) {
+  if (state.busy || !query.trim()) return;
+  state.busy = true;
+  state.currentAnswer = '';
+  state.currentError = false;
+  els.input.disabled = true;
+  els.sendBtn.disabled = true;
+  resetTrace();
+
+  addMessageNode('user', query);
+  state.currentAssistant = addMessageNode('assistant', '');
+
+  try {
+    const resp = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query,
+        source_filter: source || null,
+        session_id: state.sessionId
+      })
+    });
+
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      throw new Error(`服务器错误 (${resp.status}): ${errorText}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          handleEvent(JSON.parse(line.slice(6)));
+        } catch (parseErr) {
+          console.warn('SSE parse error:', parseErr.message);
+        }
+      }
+    }
+  } catch (err) {
+    state.currentError = true;
+    state.currentAnswer = `网络错误：${err.message}`;
+    updateAssistantNode(state.currentAssistant, state.currentAnswer, true, false);
+    updateMeta({
+      route: 'error',
+      classification: '异常',
+      need_rag: null,
+      strategy: '请求失败',
+      retrieval_count: 0,
+      docs: [],
+      cache_hit: false,
+      bm25_score: null,
+      best_question: err.message,
+      context_preview: ''
+    });
+  } finally {
+    state.busy = false;
+    updateAssistantNode(state.currentAssistant, state.currentAnswer || '未收到回答。', state.currentError, false);
+    const last = state.messages[state.messages.length - 1];
+    if (last && last.role === 'assistant') {
+      last.text = state.currentAnswer || '未收到回答。';
+      last.error = state.currentError;
+      saveMessages();
+    }
+    els.input.disabled = false;
+    els.sendBtn.disabled = false;
+    els.input.focus();
+  }
+}
+
+function handleEvent(event) {
+  if (event.type === 'meta') {
+    updateMeta(event.data || event);
+    return;
+  }
+  if (event.type === 'token') {
+    state.currentAnswer += event.content || '';
+    updateAssistantNode(state.currentAssistant, state.currentAnswer, false, true);
+    return;
+  }
+  if (event.type === 'error') {
+    state.currentError = true;
+    state.currentAnswer += event.content || '处理失败';
+    updateMeta(event.data || event);
+    updateAssistantNode(state.currentAssistant, state.currentAnswer, true, false);
+    return;
+  }
+  if (event.type === 'done') {
+    updateMeta(event.data || event);
+  }
+}
+
+function resetTrace() {
+  updateMeta({
+    route: 'start',
+    classification: '待判断',
+    need_rag: null,
+    cache_hit: null,
+    bm25_score: null,
+    strategy: '待选择',
+    retrieval_count: 0,
+    docs: []
+  });
+}
+
+els.form.addEventListener('submit', event => {
+  event.preventDefault();
+  const query = els.input.value.trim();
+  const source = els.source.value;
+  els.input.value = '';
+  sendQuery(query, source);
+});
+
+document.getElementById('examples').addEventListener('click', event => {
+  const btn = event.target.closest('button[data-query]');
+  if (!btn) return;
+  els.source.value = btn.dataset.source || '';
+  els.input.value = btn.dataset.query;
+  sendQuery(btn.dataset.query, btn.dataset.source || '');
+});
+
+document.getElementById('clear-chat').addEventListener('click', () => {
+  state.messages = [];
+  saveMessages();
+  renderMessages();
+  resetTrace();
+});
+
+document.getElementById('new-session').addEventListener('click', () => {
+  state.sessionId = crypto.randomUUID();
+  localStorage.setItem('edurag.sessionId', state.sessionId);
+  els.sessionId.textContent = shortId(state.sessionId);
+  state.messages = [];
+  saveMessages();
+  renderMessages();
+  resetTrace();
+});
+
+renderMessages();
+resetTrace();
+loadSources();
+loadProjectInfo();
+</script>
+</body>
+</html>
