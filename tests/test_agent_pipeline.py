@@ -166,3 +166,28 @@ def test_run_pipeline_task_signature():
     from app.agent_pipeline import run_pipeline_task
     assert run_pipeline_task.name == "agent_pipeline.run"
     assert callable(run_pipeline_task.delay)
+
+
+# ── Integration: full import chain works ──────────────────────────────────────
+
+def test_full_module_import_chain():
+    """Verify all new modules can be imported without runtime errors."""
+    from app.agent_tools import ALL_TOOLS, get_tool_definitions, execute_tool
+    from app.agent_pipeline import _load_pipeline_config, _topological_sort, get_progress, run_pipeline_task
+
+    cfg = _load_pipeline_config()
+    assert "stages" in cfg
+    assert "agents" in cfg
+
+    stages = cfg["stages"]
+    assert len(stages) >= 4
+
+    ordered = _topological_sort(stages)
+    stage_ids = [s["id"] for s in ordered]
+    assert stage_ids.index("research") == 0
+    assert stage_ids.index("review") == len(stage_ids) - 1
+
+    code_schemas = get_tool_definitions("code_agent")
+    assert len(code_schemas) >= 2
+
+    assert run_pipeline_task.name == "agent_pipeline.run"
