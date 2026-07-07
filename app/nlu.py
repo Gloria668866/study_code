@@ -246,6 +246,44 @@ def layer3_extract_entities(question: str, context_block: str = "") -> dict:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+# Brand/entity keyword scan — deterministic fallback when LLM entity extraction misses entities
+_KEYWORD_BRANDS = frozenset([
+    "比亚迪", "特斯拉", "理想", "蔚来", "小鹏", "零跑", "哪吒", "问界", "极氪", "小米",
+    "吉利", "长安", "奇瑞", "长城", "五菱", "广汽", "埃安", "深蓝", "腾势", "奔驰",
+    "宝马", "奥迪", "丰田", "本田", "大众", "福特", "日产", "上汽", "北汽", "东风",
+    "红旗", "领克", "欧拉", "岚图", "智己", "阿维塔", "启源", "银河", "极越",
+])
+
+_KEYWORD_MODELS = frozenset([
+    "Model Y", "Model 3", "SU7", "L6", "L7", "L9", "MEGA", "海鸥", "海豚",
+    "宏光MINIEV", "秦PLUS", "汉EV", "唐EV", "宋PLUS", "宋Pro", "护卫舰",
+    "星愿", "极氪001", "极氪007", "问界M7", "问界M9", "理想ONE", "GLC",
+    "X5", "Q5", "A6L", "凯美瑞", "雅阁", "帕萨特",
+])
+
+_KEYWORD_TIME = frozenset([
+    "2025", "2024", "2023", "2026", "2022", "2021", "2020", "2019",
+    "今年", "去年", "前年", "本月", "上月", "上个月", "这个月",
+])
+
+
+def _keyword_entity_scan(question: str) -> dict:
+    """Deterministic keyword scan for brand/model/time entities.
+    Used as fallback when LLM entity extraction returns empty results.
+    """
+    result = {"brands": [], "models": [], "time": [], "metrics": [], "energy_types": []}
+    for brand in _KEYWORD_BRANDS:
+        if brand in question:
+            result["brands"].append(brand)
+    for model in _KEYWORD_MODELS:
+        if model.lower() in question.lower():
+            result["models"].append(model)
+    for time_word in _KEYWORD_TIME:
+        if time_word in question:
+            result["time"].append(time_word)
+    return result
+
+
 def classify(
     question: str,
     history: list = None,
@@ -281,6 +319,11 @@ def classify(
     # Layer 3 (only for data-related intents)
     if l2["intent"] in ("sql", "rag", "hybrid"):
         l3 = layer3_extract_entities(question, context_block)
+        # Fallback: if LLM entity extraction returned empty brands, use keyword scan
+        if not any(l3.get(k) for k in ("brands", "models", "time", "metrics", "energy_types")):
+            kw_entities = _keyword_entity_scan(question)
+            if any(kw_entities.get(k) for k in ("brands", "models", "time")):
+                l3 = {**l3, **kw_entities}
     else:
         l3 = {"brands": [], "models": [], "time": [], "metrics": [],
               "energy_types": [], "normalized_question": question}
