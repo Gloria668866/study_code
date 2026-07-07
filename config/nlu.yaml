@@ -55,6 +55,10 @@ nlu:
       intent: clarify
     - question: "最近的数据"
       intent: clarify
+    - question: "奔驰2025年销量"
+      intent: sql
+    - question: "奔驰GLC 2025年销量"
+      intent: sql
 
   slot_rules:
     sql_requires_one_of:

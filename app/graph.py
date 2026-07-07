@@ -231,7 +231,8 @@ def intent_router(state: AgentState):
             result["confidence"] = min(result.get("confidence", 0.8), 0.7)
 
     # Slot completeness: is_complete=False + sql/hybrid → clarify
-    if intent in ("sql", "hybrid") and not result.get("is_complete", True):
+    is_complete = result.get("is_complete", True)
+    if intent in ("sql", "hybrid") and not is_complete:
         intent = "clarify"
 
     new_active = _merge_entities(active_ents, entities)
@@ -428,22 +429,34 @@ def insight(state: AgentState):
         # P3 FEATURE: oh-my-openagent — trigger async data collection pipeline
         import secrets
         task_id = "agent_" + secrets.token_hex(8)
+        pipeline_triggered = False
         try:
             from .agent_pipeline import run_pipeline_task
             run_pipeline_task.delay(task_id=task_id, original_question=q,
                                     original_user_id=state.get("user_id", 0))
+            pipeline_triggered = True
+        except Exception:
+            # Celery/Redis not available → try synchronous fallback
+            try:
+                from .agent_pipeline import run_pipeline
+                run_pipeline(task_id, q, state.get("user_id", 0))
+                pipeline_triggered = True
+            except Exception:
+                pass
+
+        if pipeline_triggered:
             return {"no_data": True,
                     "task_id": task_id,
                     "insight": f"数据库暂无相关数据。{brand_hint}"
                                f"已启动智能数据采集（任务ID：{task_id[:12]}…），预计需要 30 秒到 2 分钟。\n"
                                f"采集完成后将自动为您重新查询，请稍候…",
                     "trace": [_t("insight", empty_result=True, task_id=task_id)]}
-        except Exception:
-            # FAIL-SAFE: pipeline unavailable → fall back to original dead-end message
-            return {"no_data": True, "insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
-                           f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
-                           f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",
-                    "trace": [_t("insight", empty_result=True)]}
+
+        # FAIL-SAFE: pipeline completely unavailable → fall back to original dead-end message
+        return {"no_data": True, "insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
+                       f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
+                       f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",
+                "trace": [_t("insight", empty_result=True)]}
 
     # 路径C：正常结果 → LLM 生成洞察
     txt = chat([{"role": "system", "content": _INSIGHT_SYS},
