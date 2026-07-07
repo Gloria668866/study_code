@@ -169,10 +169,19 @@ def _get_config_list(key):
     return _get_nlu_cfg().get(key, [])
 
 
-_GREETING_PREFIXES = tuple(_get_config_list("greeting_prefixes")) or (
-    "你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
-_NO_DATA_SIGNALS = frozenset(_get_config_list("no_data_signals")) or frozenset([
-    "未查询到", "没有找到", "未检索到"])
+try:
+    _greetings = _get_config_list("greeting_prefixes")
+    _GREETING_PREFIXES = tuple(_greetings) if _greetings is not None else (
+        "你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+    _no_data = _get_config_list("no_data_signals")
+    _NO_DATA_SIGNALS = frozenset(_no_data) if _no_data is not None else frozenset([
+        "未查询到", "没有找到", "未检索到", "no data", "not found", "no results",
+        "no records", "0条结果", "不在覆盖范围", "不在数据库", "未在知识库中检索到"])
+except Exception:
+    _GREETING_PREFIXES = ("你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+    _NO_DATA_SIGNALS = frozenset([
+        "未查询到", "没有找到", "未检索到", "no data", "not found", "no results",
+        "no records", "0条结果", "不在覆盖范围", "不在数据库", "未在知识库中检索到"])
 
 
 def _classify_intent(question: str, context_block: str) -> dict:

@@ -26,23 +26,33 @@ _few_shot_examples = None     # list[dict]
 
 
 def _load_config() -> dict:
-    global _cfg, _few_shot_embeddings, _few_shot_examples
+    global _cfg
     with _cfg_lock:
         if _cfg is not None:
             return _cfg
         path = Path(NLU_CONFIG_PATH)
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        _cfg = raw.get("nlu", {})
-        # Pre-embed few-shot examples into in-memory numpy array
-        examples = _cfg.get("few_shot_examples") or []
-        if examples:
-            texts = [e["question"] for e in examples]
-            vecs = embed_passages(texts)   # returns [] if model unavailable
-            if vecs:
-                _few_shot_embeddings = np.array(vecs, dtype=np.float32)
-                _few_shot_examples = examples
-        return _cfg
+        _cfg = (raw or {}).get("nlu", {})
+    # Embed few-shot examples outside _cfg_lock to avoid blocking all threads
+    _init_few_shot(_cfg)
+    return _cfg
+
+
+def _init_few_shot(cfg: dict) -> None:
+    """Pre-embed few-shot examples into in-memory numpy array. Uses _few_shot_lock."""
+    global _few_shot_embeddings, _few_shot_examples
+    with _few_shot_lock:
+        if _few_shot_embeddings is not None:
+            return
+        examples = cfg.get("few_shot_examples") or []
+        if not examples:
+            return
+        texts = [e.get("question", "") for e in examples if e.get("question")]
+        vecs = embed_passages(texts)
+        if vecs:
+            _few_shot_embeddings = np.array(vecs, dtype=np.float32)
+            _few_shot_examples = examples
 
 
 def get_cfg() -> dict:
@@ -96,7 +106,7 @@ def layer5_business_rules(intent: str, question: str) -> str:
     cfg = get_cfg()
     for rule in cfg.get("business_rules", []):
         if any(kw in question for kw in rule.get("if_contains", [])):
-            return rule["force_intent"]
+            return rule.get("force_intent", intent)
     return intent
 
 
@@ -136,7 +146,10 @@ def _build_few_shot_block(examples: list) -> str:
         return ""
     lines = ["参考示例："]
     for ex in examples:
-        lines.append(f'  问题: "{ex["question"]}" → intent: {ex["intent"]}')
+        q_text = ex.get("question", "")
+        i_text = ex.get("intent", "")
+        if q_text and i_text:
+            lines.append(f'  问题: "{q_text}" → intent: {i_text}')
     return "\n".join(lines) + "\n\n"
 
 
@@ -159,13 +172,13 @@ JSON 格式：
 
 def layer2_classify(question: str, context_block: str = "", force_rag: bool = False) -> dict:
     """单任务 LLM 分类 + few-shot 增强。FAIL-SAFE：异常返回 clarify。"""
-    few_shot = _retrieve_few_shot(question)
-    prompt = _build_few_shot_block(few_shot)
-    if context_block:
-        prompt += context_block + "\n\n"
-    prompt += question
-
     try:
+        few_shot = _retrieve_few_shot(question)
+        prompt = _build_few_shot_block(few_shot)
+        if context_block:
+            prompt += context_block + "\n\n"
+        prompt += question
+
         raw = chat([
             {"role": "system", "content": _CLASSIFY_SYS},
             {"role": "user", "content": prompt},
@@ -183,7 +196,7 @@ def layer2_classify(question: str, context_block: str = "", force_rag: bool = Fa
             "intent": intent,
             "confidence": min(1.0, max(0.0, float(r.get("confidence", 0.8)))),
             "top2_intent": r.get("top2_intent", ""),
-            "top2_confidence": float(r.get("top2_confidence", 0.0)),
+            "top2_confidence": float(r.get("top2_confidence") or 0.0),
             "source": "layer2_llm",
         }
     except Exception:
