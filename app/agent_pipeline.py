@@ -351,16 +351,33 @@ def run_pipeline(
     }
 
 
-# ── Celery task stub (will be replaced by @celery_app.task in Task 4) ─────────
+# ── Celery task ───────────────────────────────────────────────────────────────
 
-class _CeleryTaskStub:
-    """Placeholder stub for the Celery task. Task 4 replaces this with @celery_app.task."""
-    name = "agent_pipeline.run"
-
-    def delay(
-        self, task_id: str, original_question: str, original_user_id: int = 0
-    ) -> Any:
-        return run_pipeline(task_id, original_question, original_user_id)
+from .celery_app import celery
 
 
-run_pipeline_task = _CeleryTaskStub()
+@celery.task(name="agent_pipeline.run", bind=True, max_retries=0,
+             task_ignore_result=True)
+def run_pipeline_task(self, task_id: str, original_question: str,
+                      original_user_id: int = 0):
+    """Celery task wrapper for run_pipeline. fire-and-forget with Redis progress.
+    On success, writes results to RAG and triggers re-query via callback.
+    """
+    _set_progress(task_id, {"stage": "queued", "status": "pending", "ts": time.time()})
+
+    try:
+        result = run_pipeline(task_id, original_question, original_user_id)
+        _set_progress(task_id, {
+            "stage": result.get("status", "done"),
+            "status": result.get("status", "failed"),
+            "final_answer": result.get("final_answer", "")[:500],
+            "ts": time.time(),
+        })
+        return result
+    except Exception as e:
+        _log.error(f"Pipeline task {task_id} failed: {e}", exc_info=True)
+        _set_progress(task_id, {
+            "stage": "error", "status": "failed",
+            "error": str(e)[:300], "ts": time.time(),
+        })
+        return {"status": "failed", "error": str(e)[:300]}
