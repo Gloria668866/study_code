@@ -254,3 +254,23 @@ def test_graph_singleton_builds_exactly_once_under_concurrency():
         )
     finally:
         graph_module._GRAPH = original_graph   # 还原，避免污染其他测试
+
+
+def test_insight_no_data_returns_task_id(monkeypatch):
+    """When no_data=True, insight node should return a task_id for the pipeline."""
+    import uuid
+
+    fake_task_id = "task_test_" + uuid.uuid4().hex[:8]
+    mock_delay = MagicMock(return_value=type('FakeAsyncResult', (), {'id': fake_task_id})())
+    monkeypatch.setattr("app.agent_pipeline.run_pipeline_task", MagicMock(delay=mock_delay))
+
+    state = {"question": "理想L9海外销量", "rows": [], "cols": [], "history": []}
+    import app.graph as graph_module
+    result = graph_module.insight(state)
+
+    assert result.get("no_data") is True
+    tid = result.get("task_id")
+    assert isinstance(tid, str) and tid.startswith("agent_")
+    assert mock_delay.called
+    # Verify the user-facing message mentions collection
+    assert "采集" in result.get("insight", "")
