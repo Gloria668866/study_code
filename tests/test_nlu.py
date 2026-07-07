@@ -49,7 +49,7 @@ def test_layer4_sql_with_metric_keyword_is_complete():
 
 def test_layer4_sql_no_entity_no_keyword_incomplete():
     from app.nlu import layer4_check_completeness
-    ok, slots = layer4_check_completeness("sql", {}, "销量排名")
+    ok, slots = layer4_check_completeness("sql", {}, "哪个好")
     assert ok is False
     assert len(slots) > 0
 
@@ -204,7 +204,7 @@ def test_classify_incomplete_sql_becomes_clarify(monkeypatch):
     monkeypatch.setattr(nlu, "_few_shot_examples", None)
 
     classify_resp = '{"intent":"sql","confidence":0.88,"top2_intent":"clarify","top2_confidence":0.05}'
-    entity_resp = '{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"销量排名"}'
+    entity_resp = '{"brands":[],"models":[],"time":[],"metrics":[],"energy_types":[],"normalized_question":"哪个好"}'
 
     call_count = {"n": 0}
     def mock_chat(msgs, **kw):
@@ -212,7 +212,7 @@ def test_classify_incomplete_sql_becomes_clarify(monkeypatch):
         return classify_resp if call_count["n"] == 1 else entity_resp
 
     with patch("app.nlu.chat", side_effect=mock_chat):
-        result = nlu.classify("销量排名")
+        result = nlu.classify("哪个好")
 
     assert result["intent"] == "clarify"
     assert len(result["missing_slots"]) > 0

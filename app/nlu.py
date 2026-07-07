@@ -301,7 +301,7 @@ def classify(
         "intent": final_intent,
         "confidence": l2["confidence"],
         "entities": {k: l3[k] for k in ("brands", "models", "time", "metrics", "energy_types")},
-        "is_complete": is_complete,
+        "is_complete": is_complete or final_intent not in ("sql", "hybrid"),
         "missing_slots": missing,
         "normalized_question": l3.get("normalized_question", question),
         "source": l2["source"],
