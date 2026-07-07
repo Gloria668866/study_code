@@ -180,11 +180,20 @@ def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> di
             tool_results.append({"tool_name": tc.function.name, "result": result})
 
         # Feed tool results back for final response
+        # OpenAI requires each tool response message to have a matching tool_call_id
+        tool_response_msgs = []
+        for tc in msg.tool_calls:
+            tool_result = next((tr["result"] for tr in tool_results if tr["tool_name"] == tc.function.name), {"error": "not found"})
+            tool_response_msgs.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(tool_result, ensure_ascii=False),
+            })
         msgs.append({"role": "assistant", "content": msg.content or "",
                      "tool_calls": [{"id": tc.id, "type": "function",
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                      for tc in msg.tool_calls]})
-        msgs.append({"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)})
+        msgs.extend(tool_response_msgs)
         raw = chat(msgs, **extra_kwargs)
         return _parse_json_response(raw)
 
