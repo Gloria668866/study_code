@@ -171,18 +171,6 @@ def ask_sync(body: Ask, user: User = Depends(get_current_user), db: Session = De
     }
 
 
-@app.post("/api/debug_classify")
-def debug_classify(body: Ask, user: User = Depends(get_current_user)):
-    from .nlu import classify
-    from .graph import run_agent
-    r = classify(body.question)
-    s = run_agent(body.question, user.id)
-    return {"classify_intent": r["intent"], "classify_is_complete": r["is_complete"],
-            "classify_entities": r["entities"]["brands"],
-            "run_agent_intent": s["intent"], "run_agent_trace": [t["node"] for t in s.get("trace", [])],
-            "run_agent_insight": (s.get("insight") or "")[:200]}
-
-
 def _insight_pieces(text: str, n: int = 24):
     for i in range(0, len(text), n):
         yield text[i:i + n]
