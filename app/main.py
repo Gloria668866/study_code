@@ -297,6 +297,60 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
     return EventSourceResponse(gen(), ping=15)
 
 
+# ---------------------------------------------------------------- oh-my-openagent 进度
+@app.get("/api/tasks/{task_id}/stream")
+async def task_stream(task_id: str, user: User = Depends(get_current_user)):
+    """SSE：订阅采集任务的进度事件。
+    事件类型：stage（{stage, status, preview}）、done、error。
+    前端用 task_id 订阅后逐阶段渲染进度条。
+    """
+    import asyncio as _asyncio
+    from .agent_pipeline import _get_progress as get_progress
+
+    async def gen():
+        last_stage = None
+        deadline = _asyncio.get_event_loop().time() + 180  # 3 min max
+        poll_interval = 1.0
+
+        while _asyncio.get_event_loop().time() < deadline:
+            progress = get_progress(task_id)
+            if progress is None:
+                yield {"event": "stage", "data": json.dumps(
+                    {"stage": "queued", "status": "pending", "message": "任务已提交，等待执行…"},
+                    ensure_ascii=False)}
+                await _asyncio.sleep(poll_interval)
+                continue
+
+            stage = progress.get("stage", "unknown")
+            status = progress.get("status", "unknown")
+
+            # Push event when stage changes
+            if stage != last_stage:
+                last_stage = stage
+                yield {"event": "stage", "data": json.dumps(progress, ensure_ascii=False, default=str)}
+
+            if stage == "done":
+                yield {"event": "done", "data": json.dumps(
+                    {"final_answer": progress.get("final_answer", ""), "task_id": task_id},
+                    ensure_ascii=False)}
+                return
+
+            if status == "failed" or stage == "error":
+                yield {"event": "error", "data": json.dumps(
+                    {"message": progress.get("error", "采集任务失败"), "task_id": task_id},
+                    ensure_ascii=False)}
+                return
+
+            await _asyncio.sleep(poll_interval)
+
+        # Timeout
+        yield {"event": "error", "data": json.dumps(
+            {"message": "采集任务超时，请稍后重试", "task_id": task_id},
+            ensure_ascii=False)}
+
+    return EventSourceResponse(gen(), ping=15)
+
+
 # ---------------------------------------------------------------- 历史会话
 @app.get("/api/history")
 def history(user: User = Depends(get_current_user), db: Session = Depends(get_db),
