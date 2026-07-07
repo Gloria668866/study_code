@@ -92,3 +92,77 @@ def test_execute_tool_write_to_rag(monkeypatch):
     assert result["status"] == "success"
     assert result["doc_id"] == 42
     assert result["chunk_count"] == 5
+
+
+# ── Pipeline DAG engine ───────────────────────────────────────────────────────
+
+def test_load_pipeline_config():
+    from app.agent_pipeline import _load_pipeline_config
+    cfg = _load_pipeline_config()
+    assert "stages" in cfg
+    assert len(cfg["stages"]) == 4
+    stage_ids = [s["id"] for s in cfg["stages"]]
+    assert stage_ids == ["research", "plan", "code", "review"]
+
+
+def test_topological_sort():
+    from app.agent_pipeline import _topological_sort
+    stages = [
+        {"id": "research", "depends_on": []},
+        {"id": "plan", "depends_on": ["research"]},
+        {"id": "code", "depends_on": ["plan"]},
+        {"id": "review", "depends_on": ["code"]},
+    ]
+    ordered = _topological_sort(stages)
+    ids = [s["id"] for s in ordered]
+    assert ids.index("research") < ids.index("plan")
+    assert ids.index("plan") < ids.index("code")
+    assert ids.index("code") < ids.index("review")
+
+
+def test_topological_sort_diamond_dag():
+    from app.agent_pipeline import _topological_sort
+    stages = [
+        {"id": "start", "depends_on": []},
+        {"id": "left", "depends_on": ["start"]},
+        {"id": "right", "depends_on": ["start"]},
+        {"id": "end", "depends_on": ["left", "right"]},
+    ]
+    ordered = _topological_sort(stages)
+    ids = [s["id"] for s in ordered]
+    assert ids.index("start") == 0
+    assert ids.index("end") == 3
+    assert ids.index("start") < ids.index("left") < ids.index("end")
+    assert ids.index("start") < ids.index("right") < ids.index("end")
+
+
+def test_get_stage_dependencies():
+    from app.agent_pipeline import _get_stage_by_id, _load_pipeline_config
+    cfg = _load_pipeline_config()
+    stage = _get_stage_by_id(cfg["stages"], "plan")
+    assert stage is not None
+    assert stage["id"] == "plan"
+    assert "research" in stage.get("depends_on", [])
+
+
+def test_redis_progress_write_read(monkeypatch):
+    import app.agent_pipeline as ap
+    fake_store = {}
+    class FakeRedis:
+        def set(self, key, value, ex=None):
+            fake_store[key] = value
+        def get(self, key):
+            return fake_store.get(key)
+        def exists(self, key):
+            return key in fake_store
+    monkeypatch.setattr(ap, "_redis_client", lambda: FakeRedis())
+    ap._set_progress("test_task_123", {"stage": "research", "status": "running"})
+    progress = ap._get_progress("test_task_123")
+    assert progress is not None
+    assert progress["stage"] == "research"
+
+
+def test_run_pipeline_task_signature():
+    from app.agent_pipeline import run_pipeline_task
+    assert run_pipeline_task.name == "agent_pipeline.run"
+    assert callable(run_pipeline_task.delay)
