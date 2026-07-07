@@ -109,6 +109,23 @@ def chat(messages, temperature: float = 0.0, **kw) -> str:
     return resp.choices[0].message.content or ""
 
 
+def chat_with_tools(messages, temperature=0.0, model=None, tools=None):
+    """Like chat() but returns the full message object for tool_calls access.
+    Returns a ChatCompletionMessage with .content (str|None) and .tool_calls (list|None).
+    """
+    t0 = time.perf_counter()
+    m = model or LLM_MODEL
+    try:
+        resp = _get_client().chat.completions.create(
+            model=m, messages=messages, temperature=temperature, tools=tools
+        )
+    except Exception:
+        _record((time.perf_counter() - t0) * 1000, None, error=True)
+        raise
+    _record((time.perf_counter() - t0) * 1000, getattr(resp, "usage", None))
+    return resp.choices[0].message
+
+
 def chat_stream(messages, temperature: float = 0.3, **kw):
     """流式对话，逐 token 产出（供洞察生成的 SSE 输出）。"""
     stream = _get_client().chat.completions.create(

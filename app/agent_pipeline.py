@@ -21,7 +21,7 @@ import redis
 import yaml
 
 from .config import AGENTS_CONFIG_PATH, REDIS_URL
-from .llm import chat
+from .llm import chat, chat_with_tools
 
 _log = logging.getLogger("cheshijing.agent_pipeline")
 
@@ -137,79 +137,48 @@ def get_progress(task_id: str) -> dict | None:
 # ── Stage execution ────────────────────────────────────────────────────────────
 
 def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> dict:
-    """Call LLM with function calling. If the model returns tool_calls, execute them
-    and feed results back for one follow-up turn. Returns final parsed JSON response.
-
-    Uses a two-turn pattern:
+    """Call LLM with optional function calling. Uses two-turn pattern:
     Turn 1: LLM sees tools, may return tool_calls
     Turn 2 (if tool_calls): tool results fed back, LLM returns final JSON
     """
     agent_cfg = _get_agent_config(agent_name)
-    model = agent_cfg.get("model") or None
+    model_override = agent_cfg.get("model") or None
     temperature = agent_cfg.get("temperature", 0.0)
 
-    # Build kwargs for chat() — only pass model if it's explicitly set (non-None)
-    def _chat_kwargs(**extra):
-        kw = {"temperature": temperature}
-        if model:
-            kw["model"] = model
-        kw.update(extra)
-        return kw
+    # Make a copy of messages to avoid mutating the caller's list
+    msgs = list(messages)
 
     if not tool_defs:
-        # No tools -- single call
-        raw = chat(messages, **_chat_kwargs())
+        raw = chat(msgs, temperature=temperature, model=model_override)
         return _parse_json_response(raw)
 
-    # With tools: first turn
-    raw = chat(messages, **_chat_kwargs(tools=tool_defs))
+    # With tools: use chat_with_tools for first turn
+    msg = chat_with_tools(msgs, temperature=temperature, model=model_override, tools=tool_defs)
 
-    # Check if the model wants to call tools
-    tool_results = []
-    if _has_tool_calls(raw):
-        tool_calls = _extract_tool_calls(raw)
-        for tc in tool_calls:
-            from .agent_tools import execute_tool
+    # Check if model requested tool calls
+    if msg.tool_calls:
+        from .agent_tools import execute_tool
 
-            result = execute_tool(tc["name"], tc.get("arguments", {}))
-            tool_results.append({"tool_name": tc["name"], "result": result})
+        tool_results = []
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            result = execute_tool(tc.function.name, args)
+            tool_results.append({"tool_name": tc.function.name, "result": result})
 
-        # Feed tool results back
-        messages.append({"role": "assistant", "content": raw})
-        messages.append(
-            {
-                "role": "user",
-                "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False),
-            }
-        )
-        raw = chat(messages, **_chat_kwargs())
+        # Feed tool results back for final response
+        msgs.append({"role": "assistant", "content": msg.content or "",
+                     "tool_calls": [{"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                     for tc in msg.tool_calls]})
+        msgs.append({"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)})
+        raw = chat(msgs, temperature=temperature, model=model_override)
+        return _parse_json_response(raw)
 
-    return _parse_json_response(raw)
-
-
-def _has_tool_calls(raw: str) -> bool:
-    """Detect if the LLM response contains function-calling tool_calls."""
-    try:
-        data = json.loads(raw)
-        return bool(data.get("tool_calls"))
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
-def _extract_tool_calls(raw: str) -> list[dict]:
-    """Extract tool call requests from an OpenAI-format response."""
-    try:
-        data = json.loads(raw)
-        calls = data.get("tool_calls", [])
-        return [
-            {
-                "name": c.get("function", {}).get("name", ""),
-                "arguments": json.loads(c.get("function", {}).get("arguments", "{}")),
-            }
-            for c in calls
-        ]
-    except Exception:
-        return []
+    # No tool calls -- treat content as final JSON
+    return _parse_json_response(msg.content or "")
 
 
 def _parse_json_response(raw: str) -> dict:

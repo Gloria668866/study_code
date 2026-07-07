@@ -4,10 +4,12 @@ Code agents call these via function calling — they never generate executable c
 Each tool is a pure Python function with a defined JSON schema for LLM consumption.
 """
 import json
-import re
-import time
 import logging
+import re
+import threading
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -22,6 +24,18 @@ _DEFAULT_HEADERS = {"User-Agent": "CarMirror/1.0 (market research bot; contact@e
 
 def _tool_http_get(url: str, **kwargs) -> dict:
     """Fetch a web page. Returns text content and metadata."""
+    # Validate URL before making request
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return {"status": "failed", "error": f"Blocked URL scheme: {parsed.scheme}", "url": url}
+    # Block private/internal IPs
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return {"status": "failed", "error": "Blocked: internal host", "url": url}
+    if hostname.startswith("169.254.") or hostname.startswith("10.") or hostname.startswith("172.16."):
+        return {"status": "failed", "error": "Blocked: private IP range", "url": url}
+    if hostname.startswith("192.168."):
+        return {"status": "failed", "error": "Blocked: private IP range", "url": url}
     try:
         resp = httpx.get(url, timeout=_DEFAULT_TIMEOUT, headers=_DEFAULT_HEADERS, follow_redirects=True)
         content = resp.text[:50000]  # truncate to 50KB to avoid overwhelming LLM context
@@ -266,6 +280,7 @@ def ingest_text_as_document(title: str, text: str, filename: str = "agent_collec
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 _yaml_cfg = None
+_yaml_lock = threading.Lock()
 
 
 def _get_tool_permissions(agent_name: str) -> list[str]:
@@ -274,11 +289,12 @@ def _get_tool_permissions(agent_name: str) -> list[str]:
     import yaml
     from pathlib import Path
 
-    if _yaml_cfg is None:
-        path = Path(AGENTS_CONFIG_PATH)
-        if path.exists():
-            with open(path, encoding="utf-8") as f:
-                _yaml_cfg = yaml.safe_load(f) or {}
-        else:
-            _yaml_cfg = {}
+    with _yaml_lock:
+        if _yaml_cfg is None:
+            path = Path(AGENTS_CONFIG_PATH)
+            if path.exists():
+                with open(path, encoding="utf-8") as f:
+                    _yaml_cfg = yaml.safe_load(f) or {}
+            else:
+                _yaml_cfg = {}
     return (_yaml_cfg.get("tool_permissions") or {}).get(agent_name, [])
