@@ -99,14 +99,19 @@ _redis_client_instance = None
 def _redis_client():
     global _redis_client_instance
     if _redis_client_instance is None:
-        _redis_client_instance = redis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            _redis_client_instance = redis.from_url(REDIS_URL, decode_responses=True)
+        except Exception:
+            _redis_client_instance = None
     return _redis_client_instance
 
 
 def _set_progress(task_id: str, data: dict):
     """Write pipeline progress to Redis. TTL matched to config."""
+    r = _redis_client()
+    if r is None:
+        return
     try:
-        r = _redis_client()
         ttl = _load_pipeline_config().get("redis", {}).get("progress_ttl_seconds", 1800)
         r.set(
             f"pipeline:{task_id}:status",
@@ -148,12 +153,18 @@ def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> di
     # Make a copy of messages to avoid mutating the caller's list
     msgs = list(messages)
 
+    # Build kwargs, only passing non-None values to avoid duplicate 'model' param
+    # (chat() internally sets model=LLM_MODEL, then passes **kw which may also contain model)
+    extra_kwargs = {"temperature": temperature}
+    if model_override:
+        extra_kwargs["model"] = model_override
+
     if not tool_defs:
-        raw = chat(msgs, temperature=temperature, model=model_override)
+        raw = chat(msgs, **extra_kwargs)
         return _parse_json_response(raw)
 
     # With tools: use chat_with_tools for first turn
-    msg = chat_with_tools(msgs, temperature=temperature, model=model_override, tools=tool_defs)
+    msg = chat_with_tools(msgs, tools=tool_defs, **extra_kwargs)
 
     # Check if model requested tool calls
     if msg.tool_calls:
@@ -174,7 +185,7 @@ def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> di
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                      for tc in msg.tool_calls]})
         msgs.append({"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)})
-        raw = chat(msgs, temperature=temperature, model=model_override)
+        raw = chat(msgs, **extra_kwargs)
         return _parse_json_response(raw)
 
     # No tool calls -- treat content as final JSON
