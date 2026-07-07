@@ -61,7 +61,7 @@ agents:
     model: null
     temperature: 0.1
     system_prompt: |
-      你是数据采集执行器。你是数据采集执行器。你有一组预定义工具，用 function calling 完成采集任务。
+      你是数据采集执行器。你有一组预定义工具，用 function calling 完成采集任务。
       你能用的工具已通过 OpenAI function calling 协议提供给你。
 
       重要规则：
