@@ -1,0 +1,110 @@
+# oh-my-openagent pipeline configuration
+# Pipeline DAG: Research → Plan → parallel Code agents → Review
+pipeline:
+  stages:
+    - id: research
+      agent: research_agent
+      description: "Analyze what data is needed and which websites to scrape"
+    - id: plan
+      agent: plan_agent
+      depends_on: [research]
+      description: "Break into parallel collection tasks"
+    - id: code
+      agent: code_agent
+      depends_on: [plan]
+      parallel: true               # one instance per plan item
+      description: "Execute web collection in parallel"
+    - id: review
+      agent: review_agent
+      depends_on: [code]
+      description: "Summarize results, verify quality, write to RAG"
+
+agents:
+  research_agent:
+    model: null                    # null = use default LLM_MODEL from .env
+    temperature: 0.0
+    system_prompt: |
+      你是新能源汽车市场数据调研专家。用户问了一个问题，但我们的数据库里没有相关数据。
+      你的任务：分析需要什么样的数据、从哪些公开网站可以获取。
+
+      返回严格 JSON（无其他文字）：
+      {
+        "data_requirements": ["需要的数据项1", "需要的数据项2"],
+        "suggested_sources": [
+          {"name": "来源名称", "url": "https://...", "type": "html|api|search", "reason": "为什么选这个来源"}
+        ],
+        "search_queries": ["搜索引擎查询词1", "查询词2"],
+        "confidence": 0.85
+      }
+
+  plan_agent:
+    model: null
+    temperature: 0.0
+    system_prompt: |
+      你是数据采集规划专家。根据 Research Agent 的分析结果，制定并行采集方案。
+
+      返回严格 JSON（无其他文字）：
+      {
+        "tasks": [
+          {
+            "id": "task_1",
+            "description": "采集任务描述",
+            "source": {"name": "来源名", "url": "https://...", "type": "html|api|search"},
+            "tool": "http_get|search_web",
+            "priority": 1
+          }
+        ],
+        "estimated_time_seconds": 30
+      }
+
+  code_agent:
+    model: null
+    temperature: 0.1
+    system_prompt: |
+      你是数据采集执行器。你是数据采集执行器。你有一组预定义工具，用 function calling 完成采集任务。
+      你能用的工具已通过 OpenAI function calling 协议提供给你。
+
+      重要规则：
+      - 只使用提供的工具，不要尝试生成代码
+      - 如果目标网站返回 403/Cloudflare/需要 JS 渲染，立即报告失败不要重试
+      - 把采集到的原始文本交给 review_agent 处理，不要自己总结
+
+      返回严格 JSON（无其他文字）：
+      {
+        "status": "success|partial|failed",
+        "collected_data": [
+          {"source_url": "https://...", "content_type": "text/html", "content_preview": "前200字符...", "byte_length": 1234}
+        ],
+        "errors": ["错误描述"],
+        "tool_calls_made": 3
+      }
+
+  review_agent:
+    model: null
+    temperature: 0.1
+    system_prompt: |
+      你是数据质量审核员。审核采集到的数据，判断是否足以回答用户的原始问题。
+
+      返回严格 JSON（无其他文字）：
+      {
+        "verdict": "sufficient|partial|insufficient",
+        "summary": "一句话总结采集到了什么",
+        "answer_to_user": "如果数据充足，用采集到的数据回答用户原始问题；如果不充足，诚实说明并建议用户换个问法",
+        "data_quality": {
+          "relevance_score": 0.85,
+          "completeness_score": 0.70,
+          "issues": ["问题1", "问题2"]
+        },
+        "should_write_to_rag": true,
+        "rag_title": "入库文档标题（如：理想L9海外销量-采集数据）"
+      }
+
+# Tool permissions: which tools each agent can use
+tool_permissions:
+  research_agent: []               # research only analyzes, doesn't execute
+  plan_agent: []                   # plan only structures, doesn't execute
+  code_agent: [http_get, search_web, parse_html]
+  review_agent: [write_to_rag]     # review writes results to knowledge base
+
+redis:
+  progress_ttl_seconds: 1800       # pipeline progress keys expire after 30 min

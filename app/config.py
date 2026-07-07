@@ -80,3 +80,4 @@ CONTEXT_TOKEN_BUDGET = int(os.getenv("CONTEXT_TOKEN_BUDGET", "3000"))  # 父块�
 MAX_PARENTS = int(os.getenv("MAX_PARENTS", "5"))        # 父块数上限（防 lost-in-the-middle）
 RERANK_SCORE_MIN = float(os.getenv("RERANK_SCORE_MIN", "0.30"))  # 最高重排分低于此 → 判无依据（防幻觉）
 NLU_CONFIG_PATH = os.getenv("NLU_CONFIG_PATH", "config/nlu.yaml")
+AGENTS_CONFIG_PATH = os.getenv("AGENTS_CONFIG_PATH", "config/agents.yaml")
