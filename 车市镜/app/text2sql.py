@@ -67,6 +67,25 @@ SQL: SELECT s.series_name, AVG(r.score) AS avg_score
      WHERE r.score IS NOT NULL
      GROUP BY s.series_id, s.series_name
      ORDER BY avg_score DESC LIMIT 10
+
+Q: 对比去年同期的数据（上一轮问了2025年纯电销量Top10）
+SQL: SELECT s.series_name, SUM(f.volume) AS total_volume_2024
+     FROM fact_sales_rank f
+     JOIN dim_series s ON s.series_id = f.series_id
+     JOIN dim_date d ON d.date_id = f.date_id
+     WHERE f.new_energy_type = 1 AND d.year = 2024
+     GROUP BY s.series_id, s.series_name
+     ORDER BY total_volume_2024 DESC LIMIT 10
+
+Q: 按月拆开看看趋势（上一轮问了比亚迪各车系今年销量）
+SQL: SELECT s.series_name, d.ym, SUM(f.volume) AS monthly_volume
+     FROM fact_sales_rank f
+     JOIN dim_series s ON s.series_id = f.series_id
+     JOIN dim_brand b ON b.brand_id = s.brand_id
+     JOIN dim_date d ON d.date_id = f.date_id
+     WHERE b.brand_name LIKE '%比亚迪%' AND d.year = 2026
+     GROUP BY s.series_id, s.series_name, d.ym
+     ORDER BY s.series_name, d.ym
 """
 
 SYS = """你是资深数据分析师，把用户问题翻译成一条可执行的 SQL（方言：SQLite 兼容）。
@@ -76,8 +95,13 @@ SYS = """你是资深数据分析师，把用户问题翻译成一条可执行�
 3. 聚合/分组写清 GROUP BY；按月/年筛选要 JOIN dim_date。
 4. 严格遵守给出的领域口径与枚举（如能源类型用数字 1/2/3）。
 5. 用户问题中提到的每个品牌、车系名必须出现在 WHERE 子句中（LIKE '%关键词%'）。不得丢弃任何实体。
-6. 「今年」指当前年份 2026。
-7. 如果用户问的品牌/车系不在上述品牌列表中，说明数据库可能没有该品牌的数据。仍可生成SQL尝试查询，但做好0结果的准备。
+6. 如果当前问题未提及具体品牌/车系/时间，必须从「近期对话」中提取被省略的实体。例如上一轮问了『奔驰GLC』本轮只问『进一步分析原因』→ 仍然要在 WHERE 中包含奔驰GLC。
+7. **时间比较型追问（关键！）**：如果本轮是「对比去年同期」「看趋势」「按月拆开」「对比上个月」等基于上一轮结果的追问：
+   - 必须保持上一轮查询的**所有过滤条件**（品牌/车系/能源类型/排名范围）不变，仅调整时间维度或聚合粒度。
+   - 例：上一轮「2025年纯电销量Top10的车系」→ 本轮「对比去年同期」→ 改为 year=2024、保持 new_energy_type=1、保持同样的 Top10 排名范围。
+   - 例：上一轮「比亚迪各车系今年销量」→ 本轮「按月拆开看趋势」→ 改为 GROUP BY s.series_id, s.series_name, d.ym，保持 brand_name LIKE 比亚迪 和 year=2026。
+8. 「今年」指当前年份 2026。
+9. 如果用户问的品牌/车系不在上述品牌列表中，说明数据库可能没有该品牌的数据。仍可生成SQL尝试查询，但做好0结果的准备。
 """
 
 

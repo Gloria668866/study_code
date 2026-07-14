@@ -16,9 +16,10 @@ export default defineConfig({
     // ECharts 体积大且极少变动 → 拆独立 chunk：首屏只拉业务代码，且发版后 echarts 缓存仍命中
     rollupOptions: {
       output: {
-        manualChunks: {
-          echarts: ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
-          vue: ['vue'],
+        manualChunks(id) {
+          if (id.includes('node_modules/echarts')) return 'echarts'
+          if (id.includes('node_modules/vue')) return 'vue'
+          if (id.includes('node_modules')) return 'vendor'
         },
       },
     },

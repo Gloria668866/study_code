@@ -18,7 +18,7 @@ import threading
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -32,6 +32,26 @@ from .models import User, Conversation, Message, SavedInsight, SharedInsight
 from .config import CORS_ALLOW_ORIGINS, JWT_SECRET, LLM_BASE_URL, LLM_MODEL
 
 logger = logging.getLogger("cheshijing")
+MAX_QUESTION_LEN = 2000     # 单次提问字符上限（防滥用/超长输入拖死 LLM）
+MIN_QUESTION_LEN = 1
+_user_last_call: dict[int, float] = {}   # user_id → 上次调用时间戳（速率限制）
+
+
+def _run_agent_worker(question: str, user_id: int, history: list,
+                      put: callable, stop: threading.Event) -> None:
+    """Worker 线程：逐快照推给 SSE 事件循环。
+    每次快照前检查 stop event，断连时由 gen() 的 finally 块设置，worker 立即退出。
+    抽成独立函数便于单元测试，不依赖 asyncio event loop。
+    """
+    try:
+        for snap in stream_agent(question, user_id, history):
+            if stop.is_set():
+                break
+            put(("snap", snap))
+    except Exception as e:  # noqa: BLE001
+        put(("err", e))
+    finally:
+        put(("end", None))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title="车市镜 · 新能源车市情报 Agent")
@@ -48,7 +68,7 @@ try:
     from .kb import router as kb_router
     app.include_router(kb_router)
 except Exception as _e:  # noqa: BLE001
-    print(f"[warn] RAG kb 路由未加载（缺依赖或 PG 未起）：{_e}")
+    logger.warning(f"RAG kb route not loaded (missing deps or PG not started): {_e}")
 
 
 @app.on_event("startup")
@@ -64,10 +84,14 @@ def _startup():
     finally:
         _db.close()
     import os as _os
+    _env = _os.getenv("APP_ENV", "development").lower()
+    _is_prod = _env in ("production", "prod")
     if _os.getenv("ADMIN_PASSWORD", "admin123") == "admin123":
         logger.warning("管理员默认密码仍是 admin123！上线/公开演示前请在 .env 设置 ADMIN_PASSWORD。")
-    # 安全自检：JWT 弱密钥在生产环境是致命的（任何人可伪造任意用户 token）。
+    # P1 FIX: 生产环境弱密钥直接拒绝启动，而不是仅 warning
     if JWT_SECRET == "dev-insecure-change-me":
+        if _is_prod:
+            raise SystemExit("❌ 生产环境不允许使用默认 JWT_SECRET！请在 .env 设置强密钥（openssl rand -hex 32）")
         logger.warning("JWT_SECRET 仍是默认弱密钥！上线/演示前务必在 .env 设置随机强密钥（如 openssl rand -hex 32）")
     # 配置自检：base_url 与 model 跨厂商不一致 = 静默连错 API（O7：qwen 默认值 + deepseek base 的坑）。
     _base, _model = LLM_BASE_URL.lower(), LLM_MODEL.lower()
@@ -131,6 +155,10 @@ def _persist(db: Session, user: User, question: str, state: dict,
 @app.post("/api/ask_sync")
 def ask_sync(body: Ask, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """同步返回完整结果（调试用）。"""
+    if not body.question or not body.question.strip():
+        raise HTTPException(400, "问题不能为空")
+    if len(body.question) > MAX_QUESTION_LEN:
+        raise HTTPException(400, f"问题过长，请控制在{MAX_QUESTION_LEN}字符以内")
     state = run_agent(body.question, user.id)
     conv_id, msg_id = _persist(db, user, body.question, state, body.conversation_id)
     return {
@@ -148,7 +176,7 @@ def _insight_pieces(text: str, n: int = 24):
         yield text[i:i + n]
 
 
-def _load_history(db: Session, user: User, conversation_id: int | None, limit: int = 6) -> list:
+def _load_history(db: Session, user: User, conversation_id: int | None, limit: int = 10) -> list:
     """取本会话最近几轮消息作多轮上下文（仅自己的会话）。供 Agent 理解『那丰田呢』这类指代。"""
     if conversation_id is None:
         return []
@@ -170,29 +198,47 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
     history = _load_history(db, user, body.conversation_id)  # O3 多轮上下文
 
     async def gen():
+        # 速率限制：按 user.id 追踪上次调用时间，0.5s 内重复请求拒绝
+        import time as _time
+        _now = _time.time()
+        if _now - _user_last_call.get(user.id, 0) < 0.5:
+            yield {"event": "error", "data": json.dumps({"code": "RATE_LIMITED", "message": "请稍后再试，间隔 0.5 秒"}, ensure_ascii=False)}
+            return
+        _user_last_call[user.id] = _now
+        if not body.question or not body.question.strip():
+            yield {"event": "error", "data": json.dumps({"code": "EMPTY", "message": "问题不能为空"}, ensure_ascii=False)}
+            return
         yield {"event": "stage", "data": json.dumps(
             {"stage": "accepted", "message": "已接收，正在分析问题…"}, ensure_ascii=False)}
 
         # 同步流式图丢到工作线程跑，用线程安全队列把每个「累积 State 快照」桥接回事件循环。
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(); _last_intent = None
         loop = asyncio.get_running_loop()
+        _stop = threading.Event()
 
-        def worker():
-            try:
-                for snap in stream_agent(body.question, user.id, history):
-                    loop.call_soon_threadsafe(q.put_nowait, ("snap", snap))
-            except Exception as e:  # noqa: BLE001
-                loop.call_soon_threadsafe(q.put_nowait, ("err", e))
-            finally:
-                loop.call_soon_threadsafe(q.put_nowait, ("end", None))
+        def _async_put(item):
+            loop.call_soon_threadsafe(q.put_nowait, item)
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(
+            target=_run_agent_worker,
+            args=(body.question, user.id, history, _async_put, _stop),
+            daemon=True,
+        ).start()
 
         emitted: set = set()
         final: dict = {}
         err = None
-        while True:
-            kind, payload = await q.get()
+        # P0 FIX: 无超时时 LLM 挂起会永久占用协程槽，高并发下耗尽事件循环
+        # 300s = LLM_TIMEOUT(60) × MAX_RETRIES(2) × 最多6次调用，给足余量
+        _Q_TIMEOUT = 300
+        try:
+          while True:
+            try:
+                kind, payload = await asyncio.wait_for(q.get(), timeout=_Q_TIMEOUT)
+            except asyncio.TimeoutError:
+                yield {"event": "error", "data": json.dumps(
+                    {"code": "TIMEOUT", "message": "处理超时，请稍后重试。"}, ensure_ascii=False)}
+                return
             if kind == "err":
                 err = payload
                 break
@@ -201,14 +247,15 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
             snap = payload
             final = snap
             # 字段一出现就推，每种事件只推一次（渐进反馈的关键）
-            if snap.get("intent") and "intent" not in emitted:
-                emitted.add("intent")
+            if snap.get("intent") and snap.get("intent") != _last_intent:
+                _last_intent = snap.get("intent")
                 yield {"event": "intent", "data": json.dumps(
                     {"intent": snap.get("intent"), "confidence": None}, ensure_ascii=False)}
-            if snap.get("sql") and "sql" not in emitted:
-                emitted.add("sql")
-                yield {"event": "sql", "data": json.dumps({"sql_text": snap["sql"]}, ensure_ascii=False)}
+            # SQL/rows/chart: only emit when rows exist (SQL空结果走RAG回退时不展示无意义的SQL)
             if snap.get("rows") and "rows" not in emitted:
+                if snap.get("sql") and "sql" not in emitted:
+                    emitted.add("sql")
+                    yield {"event": "sql", "data": json.dumps({"sql_text": snap["sql"]}, ensure_ascii=False)}
                 emitted.add("rows")
                 yield {"event": "rows", "data": json.dumps(
                     {"columns": snap.get("cols") or [], "rows": _row_arrays(snap)},
@@ -226,18 +273,80 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
                 for c in snap.get("citations") or []:
                     yield {"event": "citation", "data": json.dumps(c, ensure_ascii=False, default=str)}
 
+        finally:
+            _stop.set()   # 客户端断连（GeneratorExit）或正常结束，均通知 worker 停止
+
         if err is not None:
             yield {"event": "error", "data": json.dumps(
                 {"code": "AGENT_ERROR", "message": "处理失败，请换种问法或缩小范围。"}, ensure_ascii=False)}
-            logger.exception(f"[ask] stream_agent 失败 user={user.id} q={body.question[:80]!r}: {err}")
+            logger.error(f"[ask] stream_agent 失败 user={user.id} q={body.question[:80]!r}: {err}",
+                         exc_info=err)
             return
 
-        # 落库（拿到完整最终 State 后）+ 收尾
+        # 落库（拿到完整最终 State 后）
+        # P1 NOTE: GeneratorExit（断连）发生在 yield 时，finally 之后的代码不执行，
+        # 故断连时本行不运行。如需断连也落库，可在 finally 中加 try/_persist，
+        # 但需要额外状态跟踪（conv_id、is_persisted flag）。当前 trade-off：
+        # 断连丢失本轮数据 vs 代码复杂度 + 可能重复写入，选前者（历史显示已有数据）。
         conv_id, msg_id = _persist(db, user, body.question, final, body.conversation_id)
         if "insight" not in emitted:  # 极端兜底：没有任何 final_answer 也让前端正常结束
             yield {"event": "insight", "data": json.dumps({"delta": "（无内容）"}, ensure_ascii=False)}
         yield {"event": "done", "data": json.dumps(
-            {"msg_id": msg_id, "conversation_id": conv_id, "has_answer": final.get("has_answer", True)},
+            {"msg_id": msg_id, "conversation_id": conv_id, "has_answer": final.get("has_answer", True), "intent": final.get("intent")},
+            ensure_ascii=False)}
+
+    return EventSourceResponse(gen(), ping=15)
+
+
+# ---------------------------------------------------------------- oh-my-openagent 进度
+@app.get("/api/tasks/{task_id}/stream")
+async def task_stream(task_id: str, user: User = Depends(get_current_user)):
+    """SSE：订阅采集任务的进度事件。
+    事件类型：stage（{stage, status, preview}）、done、error。
+    前端用 task_id 订阅后逐阶段渲染进度条。
+    """
+    import asyncio as _asyncio
+    from .agent_pipeline import _get_progress as get_progress
+
+    async def gen():
+        last_stage = None
+        deadline = _asyncio.get_event_loop().time() + 180  # 3 min max
+        poll_interval = 1.0
+
+        while _asyncio.get_event_loop().time() < deadline:
+            progress = get_progress(task_id)
+            if progress is None:
+                yield {"event": "stage", "data": json.dumps(
+                    {"stage": "queued", "status": "pending", "message": "任务已提交，等待执行…"},
+                    ensure_ascii=False)}
+                await _asyncio.sleep(poll_interval)
+                continue
+
+            stage = progress.get("stage", "unknown")
+            status = progress.get("status", "unknown")
+
+            # Push event when stage changes
+            if stage != last_stage:
+                last_stage = stage
+                yield {"event": "stage", "data": json.dumps(progress, ensure_ascii=False, default=str)}
+
+            if stage == "done":
+                yield {"event": "done", "data": json.dumps(
+                    {"final_answer": progress.get("final_answer", ""), "task_id": task_id},
+                    ensure_ascii=False)}
+                return
+
+            if status == "failed" or stage == "error":
+                yield {"event": "error", "data": json.dumps(
+                    {"message": progress.get("error", "采集任务失败"), "task_id": task_id},
+                    ensure_ascii=False)}
+                return
+
+            await _asyncio.sleep(poll_interval)
+
+        # Timeout
+        yield {"event": "error", "data": json.dumps(
+            {"message": "采集任务超时，请稍后重试", "task_id": task_id},
             ensure_ascii=False)}
 
     return EventSourceResponse(gen(), ping=15)
@@ -245,11 +354,14 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
 
 # ---------------------------------------------------------------- 历史会话
 @app.get("/api/history")
-def history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """当前用户的会话列表（只返回自己的，按时间倒序）。"""
+def history(user: User = Depends(get_current_user), db: Session = Depends(get_db),
+            limit: int = 50, offset: int = 0):
+    """当前用户的会话列表（只返回自己的，按时间倒序，支持分页避免 OOM）。"""
+    limit = min(max(int(limit), 1), 200)   # 1-200，防滥用
     convs = db.scalars(
         select(Conversation).where(Conversation.user_id == user.id)
         .order_by(Conversation.created_at.desc())
+        .limit(limit).offset(max(int(offset), 0))
     ).all()
     return {"conversations": [
         {"id": c.id, "title": c.title, "created_at": c.created_at.isoformat() if c.created_at else None}
@@ -268,7 +380,12 @@ def history_detail(conv_id: int, user: User = Depends(get_current_user), db: Ses
     ).all()
     out = []
     for m in msgs:
-        meta = json.loads(m.result_meta) if m.result_meta else None
+        # P0 FIX: 旧版写入/DB升级/写入中断时 result_meta 可能不是合法 JSON，
+        # 裸 json.loads 会让整个接口 500，用户所有历史会话全部无法访问
+        try:
+            meta = json.loads(m.result_meta) if m.result_meta else None
+        except (ValueError, TypeError):
+            meta = None
         out.append({"role": m.role, "content": m.content, "intent": m.intent,
                     "chart": (meta or {}).get("chart"), "columns": (meta or {}).get("columns"),
                     "rows": (meta or {}).get("rows"), "citations": (meta or {}).get("citations")})
@@ -288,11 +405,14 @@ def history_delete(conv_id: int, user: User = Depends(get_current_user), db: Ses
 
 
 # ---------------------------------------------------------------- 收藏看板
+_PAYLOAD_MAX = 65536   # 64KB：正常图表快照 < 3KB，此限制足够宽松且防 OOM 攻击
+
+
 class InsightIn(BaseModel):
     title: str | None = None
     question: str | None = None
     intent: str | None = None
-    payload: str | None = None     # 前端传 JSON 字符串（columns/rows/chart/insight/citations/sql）
+    payload: str | None = Field(default=None, max_length=_PAYLOAD_MAX)
 
 
 def _insight_out(it: SavedInsight) -> dict:
@@ -336,7 +456,7 @@ class ShareIn(BaseModel):
     title: str | None = None
     question: str | None = None
     intent: str | None = None
-    payload: str | None = None
+    payload: str | None = Field(default=None, max_length=_PAYLOAD_MAX)
 
 
 @app.post("/api/share")

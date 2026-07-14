@@ -12,8 +12,19 @@ const lastIntent = computed(() => {
   return 'sql'
 })
 
+const lastMsg = computed(() => {
+  for (let i = props.messages.length - 1; i >= 0; i--) {
+    if (props.messages[i].role === 'assistant') return props.messages[i]
+  }
+  return null
+})
+const isNoData = computed(() => /未查询到|没有找到|0条结果|不在覆盖|不在数据库|未检索到/.test(lastMsg.value?.insight || ''))
+
 const suggestions = computed(() => {
-  if (lastIntent.value === 'rag') return ['这个结论的依据是什么', '换个角度再解读一下', '有没有相反的观点']
+  const intent = lastIntent.value
+  if (intent === 'chat' || intent === 'clarify') return ['2025年纯电销量Top10', '比亚迪各车系怎么样', '理想和小米SU7谁卖得多']
+  if (isNoData.value) return ['2025年纯电销量Top10', '比亚迪2025年销量', '增程销量最高的5款车']
+  if (intent === 'rag') return ['这个结论的依据是什么', '换个角度再解读一下', '有没有相反的观点']
   return ['按月拆开看趋势', '对比去年同期', '还有什么值得注意的']
 })
 </script>

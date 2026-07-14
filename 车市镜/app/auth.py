@@ -56,12 +56,18 @@ def get_current_user(
     """从 Bearer token 解析出当前用户；缺失/无效/过期/用户不存在 → 401。"""
     if cred is None or not cred.credentials:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未提供登录凭证（需 Authorization: Bearer <token>）")
-    user_id = decode_token(cred.credentials)
-    if user_id is None:
+    result = decode_token(cred.credentials)
+    if result is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录凭证无效或已过期")
+    user_id, token_version = result
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
+    if user.disabled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已被禁用，请联系管理员")
+    # P1 FIX: 校验 token_version，改密码后旧 token 立即失效
+    if (user.token_version or 0) != token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录凭证已失效，请重新登录")
     return user
 
 
@@ -76,6 +82,8 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if not body.username.strip() or not body.password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "用户名和密码不能为空")
+    if len(body.password) < 6:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "密码至少 6 位")
     if db.scalar(select(User).where(User.username == body.username)):
         raise HTTPException(status.HTTP_409_CONFLICT, "用户名已存在")
     user = User(
@@ -84,7 +92,14 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         nickname=(body.nickname or body.username).strip(),
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        # P1 FIX: 并发注册同名用户时 UNIQUE constraint 触发 IntegrityError → 409 而非 500
+        if "UNIQUE" in str(e).upper() or "unique" in str(e).lower():
+            raise HTTPException(status.HTTP_409_CONFLICT, "用户名已存在")
+        raise
     db.refresh(user)
     return {"user": _user_public(user)}
 
@@ -100,7 +115,7 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     return {
-        "access_token": create_access_token(user.id),
+        "access_token": create_access_token(user.id, token_version=user.token_version or 0),
         "token_type": "bearer",
         "user": _user_public(user),
     }
@@ -140,6 +155,8 @@ def change_password(body: ChangePwdIn, user: User = Depends(get_current_user), d
     if len(body.new_password or "") < 6:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "新密码至少 6 位")
     user.password_hash = hash_password(body.new_password)
+    # P1 FIX: 自增 token_version，使改密码前签发的所有 JWT 立即失效
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
     return {"ok": True}
 

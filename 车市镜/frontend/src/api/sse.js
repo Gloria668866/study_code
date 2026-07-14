@@ -79,3 +79,48 @@ function dispatchChunk(chunk, onEvent) {
   const norm = normalizeEvent(event, raw)
   if (norm) onEvent?.(norm)
 }
+
+/**
+ * POST-SSE with automatic reconnection on network errors.
+ * Retries up to maxRetries times with linear backoff.
+ * @returns {{ abort: () => void }}
+ */
+export function postSSEWithRetry(url, body, handlers, signal, maxRetries = 2) {
+  let attempts = 0
+  let aborted = false
+  const controller = new AbortController()
+
+  function tryConnect() {
+    if (aborted) return
+    const mergedSignal = signal
+      ? combineSignals(signal, controller.signal)
+      : controller.signal
+    postSSE(url, body, {
+      onEvent: handlers.onEvent,
+      onError: (err) => {
+        if (err.code === "NETWORK" && attempts < maxRetries && !aborted) {
+          attempts++
+          setTimeout(tryConnect, 1000 * attempts)
+          return
+        }
+        handlers.onError?.(err)
+      },
+      onClose: () => {
+        if (!aborted) handlers.onClose?.()
+      },
+    }, mergedSignal)
+  }
+
+  tryConnect()
+  return { abort: () => { aborted = true; controller.abort() } }
+}
+
+function combineSignals(a, b) {
+  if (!a) return b
+  if (!b) return a
+  const c = new AbortController()
+  const onAbort = () => c.abort()
+  a.addEventListener("abort", onAbort, { once: true })
+  b.addEventListener("abort", onAbort, { once: true })
+  return c.signal
+}

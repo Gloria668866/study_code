@@ -22,7 +22,9 @@
                  └─ clarify→ clarify → END                                            ▼
                                               insight / rag_answer ───────────────→ compose → END
 """
+import json as _json
 import operator
+import threading
 from typing import Annotated, TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -38,10 +40,16 @@ from .charts import recommend_chart
 
 # ============================================================ State（§7.2）
 class AgentState(TypedDict, total=False):
-    question: str                       # 当前问题
-    history: list                       # 多轮上下文
-    user_id: int                        # RAG 多租户隔离用
-    intent: str                         # sql / rag / hybrid / clarify
+    question: str                        # 当前问题
+    history: list                        # 多轮上下文（原始消息列表）
+    user_id: int                         # RAG 多租户隔离用
+    # —— NLU 输出（新增）——
+    intent: str                          # sql / rag / hybrid / clarify / chat
+    confidence: float                    # 意图置信度 0-1
+    entities: dict                       # 本轮提取实体 {brands,models,time,metrics,energy_types}
+    active_entities: dict                # 跨轮累积实体记忆（会话级）
+    normalized_question: str            # LLM 规范化后的问题（实体补全/消歧）
+    # —— 业务状态 ——
     clarify_question: str               # 需澄清时的反问
     linked_schema: str                  # Schema Linking 结果
     sql: str                            # 生成的 SQL
@@ -49,7 +57,7 @@ class AgentState(TypedDict, total=False):
     rows: list                          # 结果行
     sql_error: str                      # 执行/校验错误
     retry_count: int                    # 已重试次数
-    sql_verified: bool                  # 语义自校验结果（结果是否真的回答了问题）
+    sql_verified: bool                  # 语义自校验结果
     chunks: list                        # RAG 归并后的父块上下文
     citations: list                     # 引用
     has_answer: bool                    # RAG 是否有依据
@@ -58,79 +66,273 @@ class AgentState(TypedDict, total=False):
     rag_answer: str                     # 知识脑答案
     final_answer: str                   # 汇总答案
     degraded: bool                      # SQL 重试耗尽降级标记
+    no_data: bool                       # SQL 执行成功但结果集为空（不强制覆盖 intent）
     trace: Annotated[list, operator.add]  # 每步留痕（并行分支用 add 合并）
 
 
 def _t(node, **kw):
-    """生成一条 trace。"""
     return {"node": node, **kw}
 
 
+# ============================================================ 实体记忆工具函数
+_KNOWN_BRANDS = frozenset([
+    "比亚迪", "特斯拉", "理想", "蔚来", "小鹏", "零跑", "哪吒", "问界", "极氪", "小米",
+    "吉利", "长安", "奇瑞", "长城", "五菱", "广汽", "埃安", "深蓝", "腾势", "奔驰",
+    "宝马", "奥迪", "丰田", "本田", "大众", "福特", "日产", "上汽", "北汽", "东风",
+    "红旗", "领克", "欧拉", "岚图", "智己", "阿维塔", "启源", "银河", "极越",
+])
+_KNOWN_MODELS = [
+    "Model Y", "Model 3", "SU7", "L6", "L7", "L9", "MEGA", "海鸥", "海豚",
+    "宏光MINIEV", "秦PLUS", "汉EV", "唐EV", "宋PLUS", "宋Pro", "海洋网", "护卫舰",
+    "星愿", "极氪001", "极氪007", "问界M7", "问界M9", "理想ONE",
+]
+
+
+def _extract_entities_from_text(text: str) -> dict:
+    """轻量关键词扫描历史消息，提取已提及的品牌/车系（不调LLM）。"""
+    tl = text.lower()
+    brands = [b for b in _KNOWN_BRANDS if b in text]
+    models = [m for m in _KNOWN_MODELS if m.lower() in tl]
+    return {"brands": brands[:5], "models": models[:5]}
+
+
+def _merge_entities(existing: dict, new_entities: dict) -> dict:
+    """把本轮实体合并进累积记忆（去重，每类最多保留8个最近值）。"""
+    merged = {}
+    keys = ("brands", "models", "time", "metrics", "energy_types")
+    for k in keys:
+        seen = list(existing.get(k) or [])
+        for v in (new_entities.get(k) or []):
+            if v and v not in seen:
+                seen.append(v)
+        merged[k] = seen[-8:]
+    return merged
+
+
+def _build_active_entities_from_history(history: list) -> dict:
+    """从历史消息提取累积实体（会话开始时初始化用）。"""
+    combined = " ".join((m.get("content") or "") for m in history)
+    return _extract_entities_from_text(combined)
+
+
+# ============================================================ 对话上下文构建
 def _history_block(state) -> str:
-    """把近期对话压成一小段上下文，让 LLM 能理解指代（如『那丰田呢』）。只取最近几轮、各截断。"""
+    """
+    构建对话上下文块，注入两层信息：
+    1. 实体记忆（本会话已识别品牌/车系）——解决「那辆车」「它」跨轮指代
+    2. 近期消息摘要——解决追问语境
+    """
     h = state.get("history") or []
-    if not h:
+    active = state.get("active_entities") or {}
+
+    parts = []
+
+    # 层1：结构化实体记忆（最高价值，LLM 可直接引用）
+    entity_lines = []
+    if active.get("brands"):
+        entity_lines.append(f"  · 本会话已提及品牌：{', '.join(active['brands'])}")
+    if active.get("models"):
+        entity_lines.append(f"  · 本会话已提及车系：{', '.join(active['models'])}")
+    if active.get("time"):
+        entity_lines.append(f"  · 本会话已提及时间：{', '.join(active['time'])}")
+    if active.get("energy_types"):
+        entity_lines.append(f"  · 本会话已提及能源类型：{', '.join(active['energy_types'])}")
+    if entity_lines:
+        parts.append("【实体记忆】（代词/省略时必须从此处补全实体）\n" + "\n".join(entity_lines))
+
+    # 层2：最近消息（截断，只保留语义上有用的部分）
+    if h:
+        lines = []
+        for m in h[-8:]:
+            role = "用户" if m.get("role") == "user" else "助手"
+            c = (m.get("content") or "").strip().replace("\n", " ")[:300]
+            if c:
+                lines.append(f"{role}：{c}")
+        if lines:
+            parts.append("【近期对话】\n" + "\n".join(lines))
+
+    if not parts:
         return ""
-    lines = []
-    for m in h[-4:]:
+
+    return (
+        "\n\n".join(parts) + "\n\n"
+        "指令：若本轮问题含代词（「那辆车」「它」「那个品牌」「上面那个」）或省略了实体，"
+        "必须从实体记忆中补全，不要询问用户。\n\n"
+    )
+
+
+# ── Backwards-compat shims (test_graph.py imports these) ──────────────────────
+from .nlu import get_cfg as _get_nlu_cfg
+
+
+def _get_config_list(key):
+    return _get_nlu_cfg().get(key, [])
+
+
+try:
+    _greetings = _get_config_list("greeting_prefixes")
+    _GREETING_PREFIXES = tuple(_greetings) if _greetings is not None else (
+        "你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+    _no_data = _get_config_list("no_data_signals")
+    _NO_DATA_SIGNALS = frozenset(_no_data) if _no_data is not None else frozenset([
+        "未查询到", "没有找到", "未检索到", "no data", "not found", "no results",
+        "no records", "0条结果", "不在覆盖范围", "不在数据库", "未在知识库中检索到"])
+except Exception:
+    _GREETING_PREFIXES = ("你好", "您好", "早安", "晚安", "早上好", "再见", "拜拜")
+    _NO_DATA_SIGNALS = frozenset([
+        "未查询到", "没有找到", "未检索到", "no data", "not found", "no results",
+        "no records", "0条结果", "不在覆盖范围", "不在数据库", "未在知识库中检索到"])
+
+
+def _classify_intent(question: str, context_block: str) -> dict:
+    """Shim: delegates to nlu.classify(). Kept for test_graph.py compatibility."""
+    from .nlu import classify as _nlu_classify
+    return _nlu_classify(question=question, context_block=context_block)
+
+
+def _build_clarify_question_from_slots(slots: list) -> str:
+    base = "您的问题信息不够完整，需要补充以下内容才能给出准确答案：\n\n"
+    if slots:
+        base += "\n".join(f"· {s}" for s in slots) + "\n\n"
+    base += (
+        "示例完整问法：\n"
+        "✓「2025年纯电销量Top10」\n"
+        "✓「比亚迪各车系今年销量对比」\n"
+        "✓「理想L6和小米SU7谁卖得多」"
+    )
+    return base
+
+
+# ============================================================ 追问检测（语义级，不硬编码关键词）
+
+_FOLLOWUP_DETECT_SYS = """\
+判断用户的新消息是「对上文的追问/澄清」还是「独立的新问题」。
+
+追问(true) = 答案已在上文中，只是追问细节/元信息。例：
+- "这是几几年的数据" "怎么算的" "数据来源是什么" "为什么是这个数" → true
+
+新问题(false) = 需要查数据库/检索文档才能回答，即使用了代词。例：
+- "那它的口碑呢" "帮我看看趋势" "对比一下XX" "那XX呢" → false
+- 包含新维度（口碑/趋势/对比/预测/原因分析）→ false
+
+默认倾向 false（新问题），只有明确是追问细节时才 true。
+只输出 JSON：{"is_followup": true/false}"""
+
+
+def _detect_followup(question: str, history: list) -> bool:
+    """语义判断：当前问题是否是对上文的追问。有历史时才调用，轻量单次 LLM。"""
+    if not history:
+        return False
+    last_msgs = []
+    for m in history[-4:]:
         role = "用户" if m.get("role") == "user" else "助手"
-        c = (m.get("content") or "").strip().replace("\n", " ")[:120]
-        if c:
-            lines.append(f"{role}：{c}")
-    if not lines:
-        return ""
-    return "近期对话（仅用于理解本轮问题的指代/省略，不要直接回答历史问题）：\n" + "\n".join(lines) + "\n\n"
+        last_msgs.append(f"{role}：{(m.get('content') or '')[:200]}")
+    context = "\n".join(last_msgs)
+    try:
+        raw = chat([
+            {"role": "system", "content": _FOLLOWUP_DETECT_SYS},
+            {"role": "user", "content": f"对话历史：\n{context}\n\n新消息：{question}"},
+        ], temperature=0.0)
+        import json as _json
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        if s >= 0 and e > s:
+            return bool(_json.loads(raw[s:e]).get("is_followup", False))
+    except Exception:
+        pass
+    return False
 
 
-# ============================================================ 节点（§7.3）
-# 只把「几乎不会在闲聊里出现」的强领域词放进快速通道；像「多少/对比/怎么样/为什么/原因」太泛，
-# 会把『你多少岁』『今天天气怎么样』误判成 sql/rag，故移出规则、交给 LLM 兜底分类（更准，代价仅一次调用）。
-_SQL_KW = ("销量", "排名", "卖", "trend", "趋势", "环比", "同比", "top", "前十", "前5", "几辆", "占比")
-_RAG_KW = ("报告", "政策", "怎么看", "解读", "口碑", "观点", "分析师", "续航怎么", "评测")
-# 明显的问候/闲聊/超纲词：命中且无领域信号 → 直接友好兜底，连 LLM 都不调（省成本）
-_CHAT_KW = ("你好", "您好", "在吗", "吃饭", "谢谢", "多谢", "再见", "拜拜", "晚安", "早安",
-            "笑话", "你是谁", "你叫", "无聊", "天气", "几点", "哈哈", "傻", "爱你")
-
-
+# ============================================================ 意图路由节点
 def intent_router(state: AgentState):
-    """意图识别：规则前置（命中即跳过 LLM 省成本）→ 否则 LLM few-shot 分类（§7.4）。
-    新增 chat 意图：问候/闲聊/与车市无关的问题（如『你吃饭了吗』）友好兜底，
-    不再因「LLM 兜底默认 sql」而被拖去硬生成 SQL、画出莫名其妙的图。"""
+    """意图路由：委托给 nlu.classify()，保留跨轮实体记忆更新。"""
     q = state["question"]
-    has_sql = any(k in q for k in _SQL_KW)
-    has_rag = any(k in q for k in _RAG_KW)
-    if has_sql and has_rag:
-        intent = "hybrid"
-    elif has_sql:
-        intent = "sql"
-    elif has_rag:
-        intent = "rag"
-    elif any(k in q for k in _CHAT_KW):
-        intent = "chat"                              # 明显闲聊/超纲且无领域信号 → 友好兜底（省一次 LLM）
+    history = state.get("history") or []
+
+    # 前置检测：追问上文 → 直接走 chat 路径，不查数据
+    if history and _detect_followup(q, history):
+        return {
+            "intent": "chat",
+            "_is_followup": True,
+            "confidence": 0.9,
+            "entities": {},
+            "active_entities": state.get("active_entities") or {},
+            "normalized_question": q,
+            "retry_count": 0,
+            "trace": [_t("intent_router", intent="chat", path="followup_detected")],
+        }
+
+    active_ents = state.get("active_entities") or _build_active_entities_from_history(history)
+    ctx = _history_block({**state, "active_entities": active_ents})
+
+    last_assistant = ""
+    for m in reversed(history):
+        if m.get("role") == "assistant":
+            last_assistant = (m.get("content") or "")[:300]
+            break
+
+    result = _classify_intent(q, ctx)
+
+    intent = result["intent"]
+    entities = result.get("entities") or {}
+    source = result.get("source", "")
+
+    # No-data guard: last assistant had no-data signal → override sql/hybrid → rag
+    if any(sig in last_assistant for sig in _NO_DATA_SIGNALS):
+        if intent in ("sql", "hybrid"):
+            intent = "rag"
+            result["confidence"] = min(result.get("confidence", 0.8), 0.7)
+
+    # Slot completeness: is_complete=False + sql/hybrid → clarify
+    is_complete = result.get("is_complete", True)
+    if intent in ("sql", "hybrid") and not is_complete:
+        intent = "clarify"
+
+    new_active = _merge_entities(active_ents, entities)
+
+    # Build trace: distinguish greeting fast-path from LLM-classified
+    if source == "layer1_greeting":
+        trace_entry = _t("intent_router", intent=intent, path="greeting_precheck")
+        confidence = result.get("confidence", 1.0)
     else:
-        # LLM few-shot 兜底分类（含 chat / clarify；默认 clarify 而非瞎猜 sql，§7.4）
-        out = chat([
-            {"role": "system", "content":
-             "判断问题意图，只回一个词：\n"
-             "sql = 查数据/统计/排名/趋势（如『Top10 销量』『比亚迪卖了多少』）\n"
-             "rag = 问文档/政策/口碑/为什么（如『报告对渗透率怎么预测』『这车口碑如何』）\n"
-             "hybrid = 既要数据又要解读（如『比亚迪销量趋势如何，行业怎么看』）\n"
-             "chat = 问候/闲聊/与新能源汽车市场无关（如『你好』『你吃饭了吗』『讲个笑话』『你是谁』）\n"
-             "clarify = 与车市相关但信息不足/口径不清（如『哪个车好』——好指销量？口碑？价格？不清楚）\n"
-             "结合近期对话理解指代（如上轮问销量、本轮『那丰田呢』应判 sql）。\n"
-             "只回 sql / rag / hybrid / chat / clarify 之一。"},
-            {"role": "user", "content": _history_block(state) + q},
-        ], temperature=0.0).strip().lower()
-        intent = next((k for k in ("hybrid", "clarify", "chat", "sql", "rag") if k in out), "clarify")
-    upd = {"intent": intent, "retry_count": 0,
-           "trace": [_t("intent_router", intent=intent, rule_hit=has_sql or has_rag)]}
+        confidence = result.get("confidence", 0.8)
+        trace_entry = _t("intent_router",
+                         intent=intent,
+                         confidence=round(confidence, 2),
+                         entities=entities,
+                         is_complete=result.get("is_complete", True),
+                         llm_classified=True)
+
+    upd: dict = {
+        "intent": intent,
+        "confidence": confidence,
+        "entities": entities,
+        "active_entities": new_active,
+        "normalized_question": result.get("normalized_question", q),
+        "retry_count": 0,
+        "trace": [trace_entry],
+    }
     if intent == "clarify":
-        upd["clarify_question"] = "你的问题信息不足，请补充：想了解销量数据，还是文档/政策解读？具体哪个车系或品牌？"
+        upd["clarify_question"] = _build_clarify_question_from_slots(result.get("missing_slots") or [])
     return upd
 
 
+_FOLLOWUP_SYS = (
+    "你是汽车数据助手。用户在追问上一条回答的细节（时间范围、数据来源、计算方式等）。"
+    "请根据对话历史直接回答，不要重新查数据。简洁、直接。"
+)
+
+
 def chitchat(state: AgentState):
-    """问候/闲聊/超纲 → 友好说明能力边界、引导回车市话题（→ END）。不查数据、不出图。"""
+    """问候/闲聊/追问 → 有历史且 is_followup=True→LLM回答；否则模板。"""
+    history = state.get("history") or []
+    q = state.get("question", "")
+    if history and state.get("_is_followup"):
+        msgs = [{"role": "system", "content": _FOLLOWUP_SYS}]
+        for m in history[-6:]:
+            msgs.append({"role": m.get("role", "user"), "content": (m.get("content") or "")[:500]})
+        msgs.append({"role": "user", "content": q})
+        answer = chat(msgs, temperature=0.3)
+        return {"final_answer": answer, "trace": [_t("chitchat", mode="followup")]}
     return {"final_answer":
             "我是「车市镜」——专注新能源汽车销量数据分析与行业知识问答的助手，暂时只聊车市相关的话题～\n"
             "你可以这样问我：\n"
@@ -146,16 +348,45 @@ def clarify(state: AgentState):
 
 
 def schema_link(state: AgentState):
-    """筛相关表 DDL（§4.1）。"""
-    schema = link_schema(state["question"])
-    return {"linked_schema": schema, "trace": [_t("schema_link", tables_chars=len(schema))]}
+    """语义 Schema Linking（§4.1）：实体感知 + 中文语义描述，比原版关键词匹配准确。"""
+    entities = state.get("entities") or {}
+    # 优先用规范化后的问题做 schema linking（实体已被 LLM 补全）
+    q = state.get("normalized_question") or state["question"]
+    schema = link_schema(q, entities=entities)
+    return {"linked_schema": schema, "trace": [_t("schema_link",
+            tables_chars=len(schema), entities_used=bool(entities))]}
+
+
+def _entity_injection(entities: dict) -> str:
+    """把 NLU 提取的实体注入到 SQL 生成提示，减少 LLM 幻造列名/实体。"""
+    if not entities:
+        return ""
+    lines = ["本轮已识别实体（SQL WHERE 条件中必须使用这些实体，不得遗漏）："]
+    if entities.get("brands"):
+        lines.append(f"  · 品牌：{', '.join(entities['brands'])}")
+    if entities.get("models"):
+        lines.append(f"  · 车系：{', '.join(entities['models'])}")
+    if entities.get("time"):
+        lines.append(f"  · 时间：{', '.join(entities['time'])}")
+    if entities.get("energy_types"):
+        lines.append(f"  · 能源类型：{', '.join(entities['energy_types'])}")
+    if entities.get("metrics"):
+        lines.append(f"  · 指标：{', '.join(entities['metrics'])}")
+    return "\n".join(lines) + "\n\n"
 
 
 def _gen_sql_messages(state):
+    entities = state.get("entities") or {}
+    entity_ctx = _entity_injection(entities)
+    # 使用规范化问题（实体已被补全，更有助于 SQL 生成）
+    q = state.get("normalized_question") or state["question"]
     return [
         {"role": "system", "content": SQL_SYS},
-        {"role": "user", "content": f"{DOMAIN}\n\n{FEWSHOT}\n可用表结构:\n{state['linked_schema']}\n\n"
-                                    f"{_history_block(state)}Q: {state['question']}\nSQL:"},
+        {"role": "user", "content": (
+            f"{DOMAIN}\n\n{entity_ctx}{FEWSHOT}\n"
+            f"可用表结构:\n{state['linked_schema']}\n\n"
+            f"{_history_block(state)}Q: {q}\nSQL:"
+        )},
     ]
 
 
@@ -231,7 +462,9 @@ def chart(state: AgentState):
 
 
 _INSIGHT_SYS = ("你是商业分析顾问。根据问题与查询结果给出：1)一句话结论 2)简要归因 3)1-2 条建议。"
-                "只依据给定数据，不编造数字。中文简洁。")
+                "只依据给定数据，不编造数字。中文简洁。"
+                "重要：结论中必须明确标注数据的时间范围（如'2024年全年''2024-2026年'），"
+                "不要让用户看完结论还不知道数据是什么时候的。")
 
 
 def insight(state: AgentState):
@@ -246,17 +479,89 @@ def insight(state: AgentState):
                            "可换个问法或缩小范围（如指定车系/月份）。",
                 "trace": [_t("insight", degraded=True)]}
 
-    # 路径B：SQL 执行成功但结果为空 —— 不调 LLM，直接返回明确消息
+    # 路径B：SQL 执行成功但结果为空
     if not rows:
         q = state.get("question", "")
+        all_text = q
+        for m in (state.get("history") or []):
+            all_text += " " + (m.get("content") or "")
+        all_text += " " + (state.get("sql") or "")
         brand_hint = ""
-        for word in ["奔驰", "宝马", "奥迪", "丰田", "本田", "大众", "特斯拉", "蔚来", "理想", "小鹏", "比亚迪", "吉利", "长安", "奇瑞", "长城"]:
-            if word in q:
+        from .nlu import _get_keyword_brands
+        for word in _get_keyword_brands():
+            if word in all_text:
                 brand_hint = f"「{word}」可能不在当前数据库覆盖范围内（目前覆盖 101 个品牌，以国产新能源为主）。"
                 break
-        return {"insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
-                           f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
-                           f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",
+
+        # Step 1: 先查 RAG 知识库 — 之前 pipeline 采集的数据可能已经存在
+        try:
+            from .rag import retrieve as R
+            from .config import RERANK_SCORE_MIN
+            rag_chunks = R.hybrid_recall(state.get("user_id", 0), q)
+            if rag_chunks:
+                top, used_rr = R.rerank(q, rag_chunks)
+                # Score filter: only apply when real reranker is available
+                # RRF scores are ~0.01-0.03, reranker scores are 0-1
+                score_ok = True
+                if used_rr and top:
+                    score_ok = top[0].get("score_final", 0) >= RERANK_SCORE_MIN
+                if top and score_ok:
+                    blocks = R.merge_parents(top)
+                    res = R.generate(q, blocks)
+                    if res.get("has_answer"):
+                        return {"no_data": True,
+                                "insight": f"📊 知识库匹配结果：\n\n{res['answer']}",
+                                "citations": res.get("citations", []),
+                                "trace": [_t("insight", empty_result=True, mode="rag_fallback",
+                                             rag_chunks=len(rag_chunks))]}
+        except Exception:
+            pass
+
+        # Step 2: RAG 没命中 → 触发 pipeline 采集
+        import secrets
+        task_id = "agent_" + secrets.token_hex(8)
+        pipeline_result = None
+
+        try:
+            from .agent_pipeline import run_pipeline_task
+            if run_pipeline_task is None:
+                raise ImportError("Celery not available")
+            run_pipeline_task.delay(task_id=task_id, original_question=q,
+                                    original_user_id=state.get("user_id", 0))
+            return {"no_data": True,
+                    "task_id": task_id,
+                    "insight": f"数据库暂无相关数据。{brand_hint}"
+                               f"已启动智能数据采集（任务ID：{task_id[:12]}…），预计需要 30 秒到 2 分钟。\n"
+                               f"采集完成后将自动为您重新查询，请稍候…",
+                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="async")]}
+        except Exception:
+            pass
+
+        # Sync fallback: run pipeline and USE the result directly
+        try:
+            from .agent_pipeline import run_pipeline
+            pipeline_result = run_pipeline(task_id, q, state.get("user_id", 0))
+        except Exception:
+            pass
+
+        if pipeline_result and pipeline_result.get("status") == "completed":
+            final_answer = pipeline_result.get("final_answer", "")
+            if final_answer and "数据采集完成" not in final_answer:
+                return {"no_data": True,
+                        "task_id": task_id,
+                        "insight": f"📊 智能数据采集结果：\n\n{final_answer}",
+                        "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_ok")]}
+            return {"no_data": True,
+                    "task_id": task_id,
+                    "insight": f"数据库暂无相关数据。{brand_hint}"
+                               f"已尝试在线搜索但未找到足够可靠的数据。建议：\n"
+                               f"1. 换个更具体的品牌/车系名称\n"
+                               f"2. 尝试更宽泛的问题（如 '2025年纯电销量Top10'）",
+                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_insufficient")]}
+
+        return {"no_data": True, "insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
+                       f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
+                       f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",
                 "trace": [_t("insight", empty_result=True)]}
 
     # 路径C：正常结果 → LLM 生成洞察
@@ -372,24 +677,29 @@ def build_graph():
 
 
 _GRAPH = None
+_GRAPH_LOCK = threading.Lock()
+
+
+def _get_graph():
+    """懒初始化 + 双重检查锁定：并发安全，build_graph() 只执行一次。"""
+    global _GRAPH
+    if _GRAPH is None:
+        with _GRAPH_LOCK:
+            if _GRAPH is None:
+                _GRAPH = build_graph()
+    return _GRAPH
 
 
 def run_agent(question: str, user_id: int, history: list = None) -> dict:
     """对外入口：跑图，返回最终 State（含 final_answer / chart / citations / trace）。"""
-    global _GRAPH
-    if _GRAPH is None:
-        _GRAPH = build_graph()
     init = {"question": question, "user_id": user_id, "history": history or [], "trace": []}
-    return _GRAPH.invoke(init)
+    return _get_graph().invoke(init)
 
 
 def stream_agent(question: str, user_id: int, history: list = None):
     """流式跑图：用 LangGraph `.stream(values)` 逐超步产出**累积 State 快照**。
     供 SSE 层在某节点完成、对应字段一出现就立刻推事件（渐进反馈，告别『等 5-10s 一次性全出』）。
     最后一个 yield 的快照即最终 State。"""
-    global _GRAPH
-    if _GRAPH is None:
-        _GRAPH = build_graph()
     init = {"question": question, "user_id": user_id, "history": history or [], "trace": []}
-    for snapshot in _GRAPH.stream(init, stream_mode="values"):
+    for snapshot in _get_graph().stream(init, stream_mode="values"):
         yield snapshot

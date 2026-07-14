@@ -29,6 +29,8 @@ def _migrate() -> None:
         stmts.append("ALTER TABLE users ADD COLUMN role VARCHAR(16) DEFAULT 'user'")
     if "disabled" not in cols:
         stmts.append("ALTER TABLE users ADD COLUMN disabled BOOLEAN DEFAULT " + ("FALSE" if is_pg else "0"))
+    if "token_version" not in cols:
+        stmts.append("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0")
     if stmts:
         with app_engine.begin() as conn:
             for s in stmts:

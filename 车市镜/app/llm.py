@@ -9,8 +9,12 @@ import time
 import threading
 from collections import deque
 
+import httpx
 from openai import OpenAI
 from .config import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+
+# 企业代理 / 自签名证书场景：设 LLM_VERIFY_SSL=false 跳过 TLS 校验（仅开发环境用）
+_VERIFY_SSL = os.getenv("LLM_VERIFY_SSL", "true").lower() not in ("false", "0", "no")
 
 # ============================================================ 调用埋点（成本/延迟可观测）
 _METRICS_LOCK = threading.Lock()
@@ -84,7 +88,8 @@ def _get_client() -> OpenAI:
         if not LLM_API_KEY:
             raise RuntimeError("LLM_API_KEY 未配置：请在 .env 中设置（参考 README 环境变量一节）")
         _client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY,
-                         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES)
+                         timeout=LLM_TIMEOUT, max_retries=LLM_MAX_RETRIES,
+                         http_client=httpx.Client(verify=_VERIFY_SSL))
     return _client
 
 
@@ -93,15 +98,33 @@ def chat(messages, temperature: float = 0.0, **kw) -> str:
 
     埋点：记录本次调用延迟与 token 用量（成功/失败都记一次，不重复计）。"""
     t0 = time.perf_counter()
+    model = kw.pop("model", None) or LLM_MODEL
     try:
         resp = _get_client().chat.completions.create(
-            model=LLM_MODEL, messages=messages, temperature=temperature, **kw
+            model=model, messages=messages, temperature=temperature, **kw
         )
     except Exception:
         _record((time.perf_counter() - t0) * 1000, None, error=True)
         raise
     _record((time.perf_counter() - t0) * 1000, getattr(resp, "usage", None))
     return resp.choices[0].message.content or ""
+
+
+def chat_with_tools(messages, temperature=0.0, model=None, tools=None):
+    """Like chat() but returns the full message object for tool_calls access.
+    Returns a ChatCompletionMessage with .content (str|None) and .tool_calls (list|None).
+    """
+    t0 = time.perf_counter()
+    m = model or LLM_MODEL
+    try:
+        resp = _get_client().chat.completions.create(
+            model=m, messages=messages, temperature=temperature, tools=tools
+        )
+    except Exception:
+        _record((time.perf_counter() - t0) * 1000, None, error=True)
+        raise
+    _record((time.perf_counter() - t0) * 1000, getattr(resp, "usage", None))
+    return resp.choices[0].message
 
 
 def chat_stream(messages, temperature: float = 0.3, **kw):

@@ -94,7 +94,20 @@ function synthAnswer(hits) {
 const OUT_OF_COVERAGE = ['奔驰', '宝马', '奥迪', '大众', '丰田', '本田', '日产', '马自达', '雷克萨斯', '沃尔沃', '凯迪拉克', '保时捷', '路虎', '捷豹', '别克', '雪佛兰', '福特', '现代', '起亚', '三菱', '英菲尼迪', '讴歌', '林肯']
 const COVERED = ['比亚迪', '特斯拉', '理想', '蔚来', '小鹏', '零跑', '哪吒', '问界', '极氪', '小米', '吉利', '长安', '奇瑞', '长城', '五菱', '广汽', '埃安', '深蓝', '腾势', '方程豹', '仰望', '星愿', '海鸥', '海豚', 'model', '宏光', '智己', '阿维塔']
 
+// 与 graph.py _CHAT_KW 对齐：明确的问候/闲聊/超纲词
+const _CHAT_KW = ['你好', '您好', '在吗', '吃饭', '谢谢', '多谢', '再见', '拜拜', '晚安', '早安', '笑话', '你是谁', '你叫', '无聊', '天气', '几点', '哈哈', '你会', '帮我']
+
 function pickScenario(question) {
+  // 1. 闲聊/超纲优先检测（防止兜底 SQL 误判）
+  if (_CHAT_KW.some((k) => question.includes(k))) return { kind: 'chat' }
+
+  // 2. 信息不足检测（对齐后端 _is_incomplete_sql_question）
+  const hasEntity = /比亚迪|特斯拉|理想|蔚来|小鹏|零跑|哪吒|问界|极氪|小米|吉利|长安|model|su7|汉|秦|海鸥|海豚|宏光|2024|2025|2026|今年|去年|纯电|插混|增程|top|前\d/.test(question)
+  if (question.trim().length <= 4 || !hasEntity) {
+    // "销量"、"中国销量"、"排名" → clarify
+    return { kind: 'clarify' }
+  }
+
   if (/报告|研报|渗透率|政策|补贴|购置税|双积分|技术路线|区别|综述|盘点|怎么看|为什么|解读|文档|出口|智驾|智能驾驶|座舱|口碑/.test(question)) return { kind: 'rag' }
   // 覆盖范围外品牌（如「奔驰销量」）→ 走 nodata，与真实后端 B1 行为一致
   const q = question.toLowerCase()
@@ -115,6 +128,26 @@ export async function mockSSE(body, handlers, signal) {
 
   const picked = pickScenario(q)
   await sleep(420); if (aborted()) return
+
+  if (picked.kind === 'clarify') {
+    onEvent({ type: 'intent', intent: 'clarify', confidence: 1.0 })
+    await sleep(300); if (aborted()) return
+    const msg = '您的问题信息不够完整，我需要更多细节才能给出准确答案。\n\n请补充：\n· **品牌或车系**：比如「比亚迪」「小米SU7」「理想L6」\n· **时间范围**：比如「2025年」「今年」「最近一个月」\n· **具体指标**：销量？排名？价格？口碑？\n\n示例完整问法：\n✓「2025年纯电销量Top10」\n✓「比亚迪各车系今年销量对比」\n✓「理想L6和小米SU7谁卖得多」'
+    for (const tk of tokenize(msg)) { if (aborted()) return; onEvent({ type: 'insight', delta: tk }); await sleep(12) }
+    onEvent({ type: 'done', msgId: Date.now() })
+    onClose?.()
+    return
+  }
+
+  if (picked.kind === 'chat') {
+    onEvent({ type: 'intent', intent: 'chat', confidence: 1.0 })
+    await sleep(300); if (aborted()) return
+    const msg = '我是「车市镜」——专注新能源汽车销量数据分析与行业知识问答的助手，暂时只聊车市相关的话题～\n\n你可以这样问我：\n· 数据：「2025年纯电销量 Top10」「比亚迪各车系今年卖了多少」\n· 解读：「小米SU7 口碑怎么样」「最近的购车补贴政策怎么说」'
+    for (const tk of tokenize(msg)) { if (aborted()) return; onEvent({ type: 'insight', delta: tk }); await sleep(12) }
+    onEvent({ type: 'done', msgId: Date.now() })
+    onClose?.()
+    return
+  }
 
   if (picked.kind === 'nodata') {
     // 覆盖范围外品牌：出意图 + SQL（展示 Text2SQL 仍尝试了），但 0 行 → 不出图、不编造，老实告知

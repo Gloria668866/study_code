@@ -1,8 +1,8 @@
 // 运行期配置：全部从 .env 读取（Vite 在构建时注入 import.meta.env.*），为上线预留。
-export const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(/\/$/, '')
+export const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:7860').replace(/\/$/, '')
 
 // 'mock' = 用本地 mock（后端未就绪）；'live' = 连真后端。
-export const DATA_SOURCE = import.meta.env.VITE_DATA_SOURCE === 'live' ? 'live' : 'mock'
+export const DATA_SOURCE = import.meta.env.VITE_DATA_SOURCE !== 'mock' ? 'live' : 'live'
 
 export const IS_MOCK = DATA_SOURCE === 'mock'
 

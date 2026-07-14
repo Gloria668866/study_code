@@ -61,7 +61,7 @@ async function liveDelete(docId) {
 // —— mock 实现（文档列表取自 kb_corpus.json：data/build_local_kb.py 从真实语料导出，非占位假数据）—— //
 import corpus from './kb_corpus.json'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-let _mockDocs = corpus.docs.map((d) => ({
+let _mockDocs = (Array.isArray(corpus) ? corpus : (corpus.docs || [])).map((d) => ({
   id: d.id, filename: d.filename || (d.title + '.md'), status: 'ready',
   file_type: d.fileType || 'md', chunk_count: d.chunkCount, created_at: d.createdAt,
 }))

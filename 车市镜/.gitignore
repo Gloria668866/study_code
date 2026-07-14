@@ -15,6 +15,8 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 bi_demo.db
 
 # ===== 爬取的原始数据（用 data/crawl_sales.py / crawl_koubei.py 可重新生成，体积大）=====
@@ -47,6 +49,10 @@ eval/reports/_*.log
 Thumbs.db
 .idea/
 .vscode/
+
+# ===== 运行时日志 =====
+uvicorn.log
+*.log
 
 # 生产环境密钥（绝不提交）
 .env.prod

@@ -19,7 +19,8 @@ const { save } = useBoard()
 const { ok, err } = useToast()
 
 const streaming = computed(() => props.msg.status === 'streaming')
-const isKnowledge = computed(() => props.msg.intent === 'rag')
+const isNoData = computed(() => props.msg.intent !== 'chat' && /未查询到|没有找到|0条结果|不在覆盖|不在数据库|未检索到/.test(props.msg.insight || ''))
+const isKnowledge = computed(() => props.msg.intent === 'rag' || props.msg.intent === 'chat' || props.msg.intent === 'clarify' || isNoData.value)
 const hasResult = computed(() => props.msg.sql || props.msg.rows.length || props.msg.insight || props.msg.citations.length)
 
 const saved = ref(false)
@@ -27,9 +28,13 @@ const sharing = ref(false)
 const shareUrl = ref('')
 
 const FALLBACK_QS = ['2025年纯电销量Top10', '理想和小米SU7谁卖得多', '2025年增程销量最高的5款车']
-const followups = computed(() => isKnowledge.value
-  ? [{ t: '🔎 看依据', q: '这个结论的依据是什么' }, { t: '🧭 换角度', q: '换个角度再解读一下' }]
-  : [{ t: '🔍 追问原因', q: '能进一步分析原因吗？' }, { t: '📈 看趋势', q: '按月拆开看看趋势' }, { t: '📊 对比', q: '对比去年同期的数据' }])
+const followups = computed(() => {
+  if (props.msg.intent === 'chat' || props.msg.intent === 'clarify')
+    return [{ t: '📊 看销量榜单', q: '2025年纯电销量Top10' }, { t: '🔍 比较车型', q: '理想和小米SU7谁卖得多' }]
+  if (isNoData.value) return [{ t: '🔍 看热门榜单', q: '2025年纯电销量Top10' }, { t: '🧭 换个品牌', q: '比亚迪2025年销量怎么样' }]
+  if (isKnowledge.value) return [{ t: '🔎 看依据', q: '这个结论的依据是什么' }, { t: '🧭 换角度', q: '换个角度再解读一下' }]
+  return [{ t: '🔍 追问原因', q: '能进一步分析原因吗？' }, { t: '📈 看趋势', q: '按月拆开看看趋势' }, { t: '📊 对比', q: '对比去年同期的数据' }]
+})
 
 function snapshot() {
   return {

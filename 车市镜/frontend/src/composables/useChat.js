@@ -24,6 +24,12 @@ function buildMsgFromHistory(m) {
 }
 
 function makeStages(intent) {
+  if (intent === 'chat' || intent === 'clarify') {
+    return [
+      { key: 'intent', label: '意图识别', status: 'done' },
+      { key: 'produce', label: '生成回复', status: 'active' },
+    ]
+  }
   const recall = intent === 'rag' ? { key: 'recall', label: '检索知识库' } : { key: 'recall', label: '查询数据库' }
   const produce = intent === 'rag' ? { key: 'produce', label: '生成答案' } : { key: 'produce', label: '生成图表与结论' }
   return [

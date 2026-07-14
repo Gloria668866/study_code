@@ -1,31 +1,32 @@
-# RAG（RAGAS 口径）评测报告
+# RAG 检索评测报告
 
-- 样本数：**60**　分类：{'single': 26, 'multi': 16, 'conflict': 6, 'none': 12}
+生成时间：2026-07-01 19:09:25
 
-## 一、可答题四指标（single+multi+conflict）
-
+## 检索层
 | 指标 | 值 |
-|---|---|
-| context precision | 0.9167 |
-| context recall | 0.894 |
-| faithfulness（忠实度/防幻觉） | 0.7973 |
-| answer relevancy（答案相关性） | 0.9444 |
-| 检索命中率 hit-recall（确定性） | 0.7604 |
-| 应答率 answer_rate | 0.75 |
+|------|-----|
+| 总题数 | 13 |
+| Single recall | 1.0 |
+| Cross recall | 1.0 |
+| Overall recall | 1.0 |
 
-## 二、防幻觉（none 类，库里没有应拒答）
+## 防幻觉
+| 指标 | 值 |
+|------|-----|
+| Negative 题数 | 3 |
+| 拒答率 | 0.0 |
 
-- 拒答正确率 abstention_rate：**1.0**（n=12）
-
-## 三、多源冲突处理（conflict 类）
-
-- 并列两口径正确率 handle_rate：**1.0**（n=6）
-
-## 四、检索消融（hit-recall，量化父子分块+rerank 增益）
-
-| 配置 | hit-recall |
-|---|---|
-| 纯向量召回 | 0.75 |
-| 混合召回(向量+全文 RRF) | 0.75 |
-| 混合召回 + rerank（完整系统） | 0.7619 |
-（消融样本 n=42）
+## 详细结果
+- ✅ [single] 2025年中国新能源汽车销量突破多少万辆？... (candidates=20)
+- ✅ [single] 新能源汽车购置税减免政策到什么时候结束？... (candidates=20)
+- ✅ [single] 纯电动汽车（BEV）相比增程式（EREV）有什么优势？... (candidates=20)
+- ✅ [single] 10-20万价格带有哪些热门车型？... (candidates=20)
+- ✅ [single] 理想汽车2025年全年交付量是多少？... (candidates=20)
+- ✅ [single] 特斯拉Model Y在懂车帝口碑评分是多少？... (candidates=20)
+- ✅ [single] 2025年充电基础设施在三线以下城市的覆盖情况如何？... (candidates=20)
+- ✅ [single] 小米SU7 2025年交付了多少辆？... (candidates=20)
+- ✅ [single] 华为ADS 3.0的核心能力是什么？... (candidates=20)
+- ✅ [single] 比亚迪海鸥的续航和价格是多少？... (candidates=20)
+- ✅ [cross] 比亚迪在哪些价格带都有布局？分别是什么车型？... (candidates=20)
+- ✅ [cross] 理想L7和问界M7的对比如何？... (candidates=20)
+- ✅ [cross] 2025年增程式电动车整体市场表现如何？... (candidates=20)

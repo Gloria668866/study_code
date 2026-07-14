@@ -9,28 +9,35 @@
 """
 import os
 import re
+import threading
 
 from ..config import EMBED_MODEL_NAME, EMBED_MAX_TOKENS, RERANK_MODEL_NAME
+
+import logging; _log = logging.getLogger("cheshijing.embed")
 
 # bge-*-zh-v1.5 检索 query 的指令前缀（passage 不加）
 _QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 
 _model = "unloaded"        # "unloaded" / None(不可用→词法降级) / SentenceTransformer 实例
 _reranker = "unloaded"     # "unloaded" / None(不可用) / CrossEncoder 实例
+_model_lock = threading.Lock()    # P2 FIX: 并发加载时多个线程同时进入会重复加载 1GB+ 模型
+_reranker_lock = threading.Lock()
 
 
 def get_model():
-    """懒加载单例。模型缺失/损坏/无法下载 → 返回 None（全链路降级为词法检索，绝不让服务崩）。"""
+    """懒加载单例（双重检查锁定）。模型缺失/损坏/无法下载 → 返回 None（全链路降级为词法检索，绝不让服务崩）。"""
     global _model
     if _model == "unloaded":
-        try:
-            from sentence_transformers import SentenceTransformer
-            m = SentenceTransformer(EMBED_MODEL_NAME)
-            m.max_seq_length = EMBED_MAX_TOKENS
-            _model = m
-        except Exception as e:                # 权重损坏/未下载/显存不足等
-            print(f"[warn] 向量模型不可用，RAG 降级为词法检索（jieba 全文 + RRF）：{e}")
-            _model = None
+        with _model_lock:
+            if _model == "unloaded":
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    m = SentenceTransformer(EMBED_MODEL_NAME)
+                    m.max_seq_length = EMBED_MAX_TOKENS
+                    _model = m
+                except Exception as e:
+                    _log.warning(f"向量模型不可用，RAG 降级为词法检索（jieba 全文 + RRF）：{e}")
+                    _model = None
     return _model
 
 
@@ -77,7 +84,7 @@ def _get_reranker():
             from sentence_transformers import CrossEncoder
             _reranker = CrossEncoder(RERANK_MODEL_NAME, max_length=512)
         except Exception as e:               # 模型没下到/加载失败 → 降级
-            print(f"[warn] bge-reranker 不可用，降级为 RRF 排序：{e}")
+            _log.warning(f"bge-reranker 不可用，降级为 RRF 排序：{e}")
             _reranker = None
     return _reranker
 

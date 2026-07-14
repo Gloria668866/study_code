@@ -189,7 +189,7 @@ def _parse_json(raw: str) -> dict:
             try:
                 return json.loads(raw[i:j + 1])
             except Exception:
-                pass
+                return {"answer": raw, "used_sources": [], "has_answer": False}
     return {"answer": raw, "used_sources": [], "has_answer": False}
 
 

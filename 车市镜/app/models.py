@@ -23,6 +23,7 @@ class User(Base):
     nickname: Mapped[Optional[str]] = mapped_column(String(64))
     role: Mapped[Optional[str]] = mapped_column(String(16), default="user")        # 'user' / 'admin'
     disabled: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)        # 禁用后不能登录
+    token_version: Mapped[Optional[int]] = mapped_column(Integer, default=0)        # P1 FIX: 改密码后自增，使旧 JWT 失效
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 

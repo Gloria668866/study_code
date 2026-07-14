@@ -38,6 +38,8 @@ def init_store():
         if _inited:
             return
         with _conn() as c:
+            # P0 FIX: WAL 模式允许并发读写（多用户同时上传文件时不再 "database is locked"）
+            c.execute("PRAGMA journal_mode=WAL")
             c.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS kb_document (

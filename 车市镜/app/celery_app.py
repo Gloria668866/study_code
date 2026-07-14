@@ -30,5 +30,6 @@ celery.conf.beat_schedule = {
 }
 
 # 注册任务模块
-import app.rag.tasks      # noqa: E402,F401  RAG 入库任务
-import app.tasks_cron     # noqa: E402,F401  定时采集任务
+import app.rag.tasks           # noqa: E402,F401  RAG 入库任务
+import app.tasks_cron          # noqa: E402,F401  定时采集任务
+import app.agent_pipeline      # noqa: E402,F401  oh-my-openagent pipeline tasks

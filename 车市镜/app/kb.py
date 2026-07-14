@@ -6,9 +6,12 @@
 - 'pg'：PostgreSQL+pgvector（pg），上传"轻返回+重后台"投 Celery 异步解析。
 两后端接口一致，故下面的 list/status/delete/ask 不分叉。
 """
+import logging
 import os
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+
+logger = logging.getLogger("cheshijing")
 from pydantic import BaseModel
 
 from .auth import get_current_user
@@ -55,7 +58,9 @@ async def upload(file: UploadFile = File(...), user: User = Depends(get_current_
     try:
         doc_id, n = ingest_bytes(user.id, file.filename, data, ftype, title=file.filename)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"解析失败：{e}")
+        # P1 FIX: 不把内部异常（含文件路径、依赖库信息）泄露给前端
+        logger.error(f"[kb/upload] user={user.id} file={file.filename!r} error: {e}", exc_info=True)
+        raise HTTPException(500, "文件解析失败，请检查文件格式或联系管理员")
     return {"doc_id": doc_id, "status": "ready", "file_type": ftype, "chunk_count": n}
 
 

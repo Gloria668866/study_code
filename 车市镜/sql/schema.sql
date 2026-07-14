@@ -154,3 +154,14 @@ CREATE TABLE kb_document (
 CREATE INDEX idx_conversation_user ON conversation(user_id);
 CREATE INDEX idx_message_user      ON message(user_id);
 CREATE INDEX idx_kb_document_user  ON kb_document(user_id);
+
+-- ============================================================
+-- Performance indexes (append after table creation)
+-- ============================================================
+-- CREATE INDEX idx_fact_sales_date ON fact_sales_rank(date_id);
+-- CREATE INDEX idx_fact_sales_series ON fact_sales_rank(series_id);
+-- CREATE INDEX idx_fact_sales_type ON fact_sales_rank(new_energy_type);
+-- CREATE INDEX idx_fact_sales_series_date ON fact_sales_rank(series_id, date_id);  -- composite for joins
+-- CREATE INDEX idx_dim_series_brand ON dim_series(brand_id);
+-- CREATE INDEX idx_message_conv ON message(conversation_id);
+-- CREATE INDEX idx_message_user ON message(user_id);
