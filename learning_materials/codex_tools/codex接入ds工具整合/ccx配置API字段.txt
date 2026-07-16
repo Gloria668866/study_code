@@ -1,0 +1,4 @@
+Channel name: DeepSeek V4 Pro
+Service type: OpenAI / OpenAI Compatible / DeepSeek（有 DeepSeek 就选 DeepSeek）
+Base URL: https://api.deepseek.com
+API key: 你的 DeepSeek 官方 API Key

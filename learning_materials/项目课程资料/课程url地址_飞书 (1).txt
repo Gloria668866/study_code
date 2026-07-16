@@ -1,0 +1,20 @@
+Chapter1：大模型通识
+飞书链接：https://uxtfmecm0c4.feishu.cn/wiki/H5eFwy8kGilIRSk0tUqcihuInKd   密码：595@Q846
+
+Chapter2：提示词工程
+飞书链接：https://uxtfmecm0c4.feishu.cn/wiki/W0hRw6jsGi7xt1kkO9rcGMlKngK   密码：9j437@35
+
+Chapter3：基于大模型的RAG
+飞书链接：https://uxtfmecm0c4.feishu.cn/wiki/CCeLwZXAKiHNCIk9WLDceOoHnKf   密码：75&18A11
+
+
+Chapter4：基于大模型的Agent
+飞书链接：https://uxtfmecm0c4.feishu.cn/wiki/GrQZwul3Oi8FNSka6UucEyUqnDB   密码：j1#91231
+
+
+Chapter5：大模型的微调
+飞书链接：https://uxtfmecm0c4.feishu.cn/wiki/KMDOwWlZ0iYK7QkeBhgcV5xZnhh   密码：@1R53646
+
+
+5.7节资料LORA微调-lamafactory
+飞书链接：https://uxtfmecm0c4.feishu.cn/docx/UrgZdviQIopklmxsamIc2cMHn0j?from=from_copylink   密码：4u&58716

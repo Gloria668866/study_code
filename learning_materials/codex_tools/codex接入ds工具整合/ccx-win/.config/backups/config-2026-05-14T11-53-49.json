@@ -1,0 +1,22 @@
+{
+  "upstream": [],
+  "responsesUpstream": [
+    {
+      "baseUrl": "https://api.deepseek.com",
+      "baseUrls": [
+        "https://api.deepseek.com"
+      ],
+      "apiKeys": [
+        "sk-2e99f84af3e341b0b58dec25631f0dc9"
+      ],
+      "serviceType": "responses",
+      "name": "deepseek-g3cqtc",
+      "priority": 1,
+      "status": "active",
+      "promotionUntil": "2026-05-14T11:58:15.9685146+08:00"
+    }
+  ],
+  "geminiUpstream": [],
+  "fuzzyModeEnabled": true,
+  "stripBillingHeader": true
+}
