@@ -159,7 +159,8 @@ def ask_sync(body: Ask, user: User = Depends(get_current_user), db: Session = De
         raise HTTPException(400, "问题不能为空")
     if len(body.question) > MAX_QUESTION_LEN:
         raise HTTPException(400, f"问题过长，请控制在{MAX_QUESTION_LEN}字符以内")
-    state = run_agent(body.question, user.id)
+    history = _load_history(db, user, body.conversation_id)
+    state = run_agent(body.question, user.id, history=history)
     conv_id, msg_id = _persist(db, user, body.question, state, body.conversation_id)
     return {
         "intent": state.get("intent"), "sql": state.get("sql"),
@@ -251,10 +252,11 @@ async def ask(body: Ask, user: User = Depends(get_current_user), db: Session = D
                 _last_intent = snap.get("intent")
                 yield {"event": "intent", "data": json.dumps(
                     {"intent": snap.get("intent"), "confidence": None}, ensure_ascii=False)}
-            if snap.get("sql") and "sql" not in emitted:
-                emitted.add("sql")
-                yield {"event": "sql", "data": json.dumps({"sql_text": snap["sql"]}, ensure_ascii=False)}
+            # SQL/rows/chart: only emit when rows exist (SQL空结果走RAG回退时不展示无意义的SQL)
             if snap.get("rows") and "rows" not in emitted:
+                if snap.get("sql") and "sql" not in emitted:
+                    emitted.add("sql")
+                    yield {"event": "sql", "data": json.dumps({"sql_text": snap["sql"]}, ensure_ascii=False)}
                 emitted.add("rows")
                 yield {"event": "rows", "data": json.dumps(
                     {"columns": snap.get("cols") or [], "rows": _row_arrays(snap)},

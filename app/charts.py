@@ -18,8 +18,10 @@
 """
 import re
 
-# 列名像时间维度（年/月/季/日期）
-_TIME_NAME = re.compile(r"(year|month|quarter|date|time|ym|day|年|月|季|周|日期|时间)", re.I)
+# 列名像时间维度（年/月/季/日期）— 用词边界避免 monthly_volume 误匹配
+_TIME_NAME = re.compile(r"(?:^|_)(year|month|quarter|date|time|ym|day)(?:$|_)|[年月季周日期时间]", re.I)
+# 列名含度量关键词时不算时间维度（即使包含 month/year 子串）
+_MEASURE_NAME = re.compile(r"(volume|count|sum|amount|total|rank|sales|price|avg|rate|ratio|num|qty)", re.I)
 # 取值像 年月：2025-05 / 202505 / 2025/05 / 2025-05-01
 _YM_VALUE = re.compile(r"^\d{4}[-/]?\d{1,2}([-/]\d{1,2})?$")
 
@@ -51,7 +53,8 @@ def recommend_chart(cols, rows, question: str = ""):
     for c in cols:
         vals = [r.get(c) for r in rows if r.get(c) is not None]
         numeric[c] = bool(vals) and all(_is_number(v) for v in vals)
-        name_is_time = bool(_TIME_NAME.search(str(c)))
+        is_measure_name = bool(_MEASURE_NAME.search(str(c)))
+        name_is_time = bool(_TIME_NAME.search(str(c))) and not is_measure_name
         val_is_time = bool(vals) and all(isinstance(v, str) and _YM_VALUE.match(v.strip()) for v in vals)
         timelike[c] = name_is_time or val_is_time
 

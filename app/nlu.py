@@ -247,12 +247,26 @@ def layer3_extract_entities(question: str, context_block: str = "") -> dict:
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 # Brand/entity keyword scan — deterministic fallback when LLM entity extraction misses entities
-_KEYWORD_BRANDS = frozenset([
+# Default list used if config doesn't have keyword_brands
+_DEFAULT_BRANDS = frozenset([
     "比亚迪", "特斯拉", "理想", "蔚来", "小鹏", "零跑", "哪吒", "问界", "极氪", "小米",
     "吉利", "长安", "奇瑞", "长城", "五菱", "广汽", "埃安", "深蓝", "腾势", "奔驰",
     "宝马", "奥迪", "丰田", "本田", "大众", "福特", "日产", "上汽", "北汽", "东风",
     "红旗", "领克", "欧拉", "岚图", "智己", "阿维塔", "启源", "银河", "极越",
 ])
+
+
+def _get_keyword_brands() -> frozenset:
+    """Load keyword brands from config, fallback to hardcoded defaults."""
+    cfg = get_cfg()
+    cfg_brands = cfg.get("keyword_brands")
+    if cfg_brands:
+        return frozenset(cfg_brands)
+    return _DEFAULT_BRANDS
+
+
+# Public alias for other modules (e.g. graph.py brand_hint)
+_KEYWORD_BRANDS = _DEFAULT_BRANDS
 
 _KEYWORD_MODELS = frozenset([
     "Model Y", "Model 3", "SU7", "L6", "L7", "L9", "MEGA", "海鸥", "海豚",
@@ -270,9 +284,11 @@ _KEYWORD_TIME = frozenset([
 def _keyword_entity_scan(question: str) -> dict:
     """Deterministic keyword scan for brand/model/time entities.
     Used as fallback when LLM entity extraction returns empty results.
+    Brands loaded from config (nlu.yaml keyword_brands) for easy extension.
     """
     result = {"brands": [], "models": [], "time": [], "metrics": [], "energy_types": []}
-    for brand in _KEYWORD_BRANDS:
+    brands = _get_keyword_brands()
+    for brand in brands:
         if brand in question:
             result["brands"].append(brand)
     for model in _KEYWORD_MODELS:

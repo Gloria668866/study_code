@@ -98,9 +98,10 @@ def chat(messages, temperature: float = 0.0, **kw) -> str:
 
     埋点：记录本次调用延迟与 token 用量（成功/失败都记一次，不重复计）。"""
     t0 = time.perf_counter()
+    model = kw.pop("model", None) or LLM_MODEL
     try:
         resp = _get_client().chat.completions.create(
-            model=LLM_MODEL, messages=messages, temperature=temperature, **kw
+            model=model, messages=messages, temperature=temperature, **kw
         )
     except Exception:
         _record((time.perf_counter() - t0) * 1000, None, error=True)

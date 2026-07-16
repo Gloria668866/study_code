@@ -164,6 +164,8 @@ def test_redis_progress_write_read(monkeypatch):
 
 def test_run_pipeline_task_signature():
     from app.agent_pipeline import run_pipeline_task
+    if run_pipeline_task is None:
+        pytest.skip("Celery not installed")
     assert run_pipeline_task.name == "agent_pipeline.run"
     assert callable(run_pipeline_task.delay)
 
@@ -175,6 +177,7 @@ def test_full_module_import_chain():
     from app.agent_tools import ALL_TOOLS, get_tool_definitions, execute_tool
     from app.agent_pipeline import _load_pipeline_config, _topological_sort, get_progress, run_pipeline_task
 
+    # run_pipeline_task may be None if Celery not installed — that's fine
     cfg = _load_pipeline_config()
     assert "stages" in cfg
     assert "agents" in cfg
@@ -190,4 +193,5 @@ def test_full_module_import_chain():
     code_schemas = get_tool_definitions("code_agent")
     assert len(code_schemas) >= 2
 
-    assert run_pipeline_task.name == "agent_pipeline.run"
+    if run_pipeline_task is not None:
+        assert run_pipeline_task.name == "agent_pipeline.run"

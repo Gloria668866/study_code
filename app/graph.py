@@ -203,11 +203,72 @@ def _build_clarify_question_from_slots(slots: list) -> str:
     return base
 
 
+# ============================================================ 多轮改写（Query Rewrite）
+
+_REWRITE_SYS = """\
+你是多轮对话改写器。将用户的新消息改写为一句独立、完整的问题（不依赖上下文即可理解）。
+
+规则：
+1. 补全省略的实体（品牌/车系/时间）——从对话历史中找到被省略的主语/宾语
+2. 解析代词（"它""那个""这个品牌"）为具体实体
+3. 保留用户原始意图中的新维度（月份/趋势/对比/口碑等）
+4. 如果问题已经完整独立，原样返回
+
+特殊情况——纯元信息追问：
+- 用户只是在问上一条回答本身的属性（时间范围、数据来源、计算方式、为什么是这个数）
+- 不需要查数据库/检索文档就能回答
+- 例："这是几几年的""怎么算的""数据来源是哪""为什么是这个数"
+- 此时 is_meta=true，rewritten 保持原文
+
+只输出 JSON：{"rewritten": "改写后的完整问题", "is_meta": false}"""
+
+
+def _rewrite_query(question: str, history: list) -> dict:
+    """多轮改写：将省略/代词问题改写为独立完整问题，或识别为纯元信息追问。"""
+    last_msgs = []
+    for m in history[-6:]:
+        role = "用户" if m.get("role") == "user" else "助手"
+        last_msgs.append(f"{role}：{(m.get('content') or '')[:300]}")
+    context = "\n".join(last_msgs)
+    try:
+        raw = chat([
+            {"role": "system", "content": _REWRITE_SYS},
+            {"role": "user", "content": f"对话历史：\n{context}\n\n新消息：{question}"},
+        ], temperature=0.0)
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        if s >= 0 and e > s:
+            parsed = _json.loads(raw[s:e])
+            return {
+                "rewritten": parsed.get("rewritten", question),
+                "is_meta": bool(parsed.get("is_meta", False)),
+            }
+    except Exception:
+        pass
+    return {"rewritten": question, "is_meta": False}
+
+
 # ============================================================ 意图路由节点
 def intent_router(state: AgentState):
     """意图路由：委托给 nlu.classify()，保留跨轮实体记忆更新。"""
     q = state["question"]
     history = state.get("history") or []
+
+    # 多轮改写：有历史时先改写问题，识别元信息追问 or 补全省略实体
+    if history:
+        rw = _rewrite_query(q, history)
+        if rw["is_meta"]:
+            return {
+                "intent": "chat",
+                "_is_followup": True,
+                "confidence": 0.9,
+                "entities": {},
+                "active_entities": state.get("active_entities") or {},
+                "normalized_question": q,
+                "retry_count": 0,
+                "trace": [_t("intent_router", intent="chat", path="meta_question",
+                             rewritten=q)],
+            }
+        q = rw["rewritten"]
 
     active_ents = state.get("active_entities") or _build_active_entities_from_history(history)
     ctx = _history_block({**state, "active_entities": active_ents})
@@ -264,8 +325,23 @@ def intent_router(state: AgentState):
     return upd
 
 
+_FOLLOWUP_SYS = (
+    "你是汽车数据助手。用户在追问上一条回答的细节（时间范围、数据来源、计算方式等）。"
+    "请根据对话历史直接回答，不要重新查数据。简洁、直接。"
+)
+
+
 def chitchat(state: AgentState):
-    """问候/闲聊/超纲 → 友好说明能力边界、引导回车市话题（→ END）。不查数据、不出图。"""
+    """问候/闲聊/追问 → 有历史且 is_followup=True→LLM回答；否则模板。"""
+    history = state.get("history") or []
+    q = state.get("question", "")
+    if history and state.get("_is_followup"):
+        msgs = [{"role": "system", "content": _FOLLOWUP_SYS}]
+        for m in history[-6:]:
+            msgs.append({"role": m.get("role", "user"), "content": (m.get("content") or "")[:500]})
+        msgs.append({"role": "user", "content": q})
+        answer = chat(msgs, temperature=0.3)
+        return {"final_answer": answer, "trace": [_t("chitchat", mode="followup")]}
     return {"final_answer":
             "我是「车市镜」——专注新能源汽车销量数据分析与行业知识问答的助手，暂时只聊车市相关的话题～\n"
             "你可以这样问我：\n"
@@ -395,7 +471,9 @@ def chart(state: AgentState):
 
 
 _INSIGHT_SYS = ("你是商业分析顾问。根据问题与查询结果给出：1)一句话结论 2)简要归因 3)1-2 条建议。"
-                "只依据给定数据，不编造数字。中文简洁。")
+                "只依据给定数据，不编造数字。中文简洁。"
+                "重要：结论中必须明确标注数据的时间范围（如'2024年全年''2024-2026年'），"
+                "不要让用户看完结论还不知道数据是什么时候的。")
 
 
 def insight(state: AgentState):
@@ -410,49 +488,86 @@ def insight(state: AgentState):
                            "可换个问法或缩小范围（如指定车系/月份）。",
                 "trace": [_t("insight", degraded=True)]}
 
-    # 路径B：SQL 执行成功但结果为空 —— 不调 LLM，直接返回明确消息
+    # 路径B：SQL 执行成功但结果为空
     if not rows:
         q = state.get("question", "")
-        # 从当前问题 + 历史对话 + SQL 中提取品牌名（跟问如『进一步分析原因』不含品牌）
         all_text = q
         for m in (state.get("history") or []):
             all_text += " " + (m.get("content") or "")
         all_text += " " + (state.get("sql") or "")
         brand_hint = ""
-        for word in ["奔驰", "宝马", "奥迪", "丰田", "本田", "大众", "特斯拉", "蔚来", "理想", "小鹏", "比亚迪", "吉利", "长安", "奇瑞", "长城"]:
+        from .nlu import _get_keyword_brands
+        for word in _get_keyword_brands():
             if word in all_text:
                 brand_hint = f"「{word}」可能不在当前数据库覆盖范围内（目前覆盖 101 个品牌，以国产新能源为主）。"
                 break
-        # P2 FIX: 不再强制覆盖 intent 为 "rag"。原来的做法导致落库记录
-        # intent="rag" 但实际走的是 sql 路径，历史还原时前端用错误组件渲染。
-        # 改用专用字段 no_data=True 传递空结果语义，不污染 intent 字段。
-        # P3 FEATURE: oh-my-openagent — trigger async data collection pipeline
+
+        # Step 1: 先查 RAG 知识库 — 之前 pipeline 采集的数据可能已经存在
+        try:
+            from .rag import retrieve as R
+            from .config import RERANK_SCORE_MIN
+            rag_chunks = R.hybrid_recall(state.get("user_id", 0), q)
+            if rag_chunks:
+                top, used_rr = R.rerank(q, rag_chunks)
+                # Score filter: only apply when real reranker is available
+                # RRF scores are ~0.01-0.03, reranker scores are 0-1
+                score_ok = True
+                if used_rr and top:
+                    score_ok = top[0].get("score_final", 0) >= RERANK_SCORE_MIN
+                if top and score_ok:
+                    blocks = R.merge_parents(top)
+                    res = R.generate(q, blocks)
+                    if res.get("has_answer"):
+                        return {"no_data": True,
+                                "insight": f"📊 知识库匹配结果：\n\n{res['answer']}",
+                                "citations": res.get("citations", []),
+                                "trace": [_t("insight", empty_result=True, mode="rag_fallback",
+                                             rag_chunks=len(rag_chunks))]}
+        except Exception:
+            pass
+
+        # Step 2: RAG 没命中 → 触发 pipeline 采集
         import secrets
         task_id = "agent_" + secrets.token_hex(8)
-        pipeline_triggered = False
+        pipeline_result = None
+
         try:
             from .agent_pipeline import run_pipeline_task
+            if run_pipeline_task is None:
+                raise ImportError("Celery not available")
             run_pipeline_task.delay(task_id=task_id, original_question=q,
                                     original_user_id=state.get("user_id", 0))
-            pipeline_triggered = True
-        except Exception:
-            # Celery/Redis not available → try synchronous fallback
-            try:
-                from .agent_pipeline import run_pipeline
-                run_pipeline(task_id, q, state.get("user_id", 0))
-                pipeline_triggered = True
-            except Exception:
-                pass
-
-        if pipeline_triggered:
             return {"no_data": True,
                     "task_id": task_id,
                     "insight": f"数据库暂无相关数据。{brand_hint}"
                                f"已启动智能数据采集（任务ID：{task_id[:12]}…），预计需要 30 秒到 2 分钟。\n"
                                f"采集完成后将自动为您重新查询，请稍候…",
-                    "trace": [_t("insight", empty_result=True, task_id=task_id)]}
+                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="async")]}
+        except Exception:
+            pass
 
-        # FAIL-SAFE: pipeline completely unavailable → fall back to original dead-end message
+        # Sync fallback: run pipeline and USE the result directly
+        try:
+            from .agent_pipeline import run_pipeline
+            pipeline_result = run_pipeline(task_id, q, state.get("user_id", 0))
+        except Exception:
+            pass
+
+        if pipeline_result and pipeline_result.get("status") == "completed":
+            final_answer = pipeline_result.get("final_answer", "")
+            if final_answer and "数据采集完成" not in final_answer:
+                return {"no_data": True,
+                        "task_id": task_id,
+                        "insight": f"📊 智能数据采集结果：\n\n{final_answer}",
+                        "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_ok")]}
+            return {"no_data": True,
+                    "task_id": task_id,
+                    "insight": f"数据库暂无相关数据。{brand_hint}"
+                               f"已尝试在线搜索但未找到足够可靠的数据。建议：\n"
+                               f"1. 换个更具体的品牌/车系名称\n"
+                               f"2. 尝试更宽泛的问题（如 '2025年纯电销量Top10'）",
+                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_insufficient")]}
+
         return {"no_data": True, "insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
                        f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
                        f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",

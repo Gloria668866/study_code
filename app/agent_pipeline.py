@@ -17,8 +17,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-import redis
 import yaml
+
+try:
+    import redis
+except ImportError:
+    redis = None
 
 from .config import AGENTS_CONFIG_PATH, REDIS_URL
 from .llm import chat, chat_with_tools
@@ -31,10 +35,10 @@ _cfg_lock = threading.Lock()
 _cfg = None
 
 
-def _load_pipeline_config() -> dict:
+def _load_pipeline_config(force_reload: bool = False) -> dict:
     global _cfg
     with _cfg_lock:
-        if _cfg is not None:
+        if _cfg is not None and not force_reload:
             return _cfg
         path = Path(AGENTS_CONFIG_PATH)
         if not path.exists():
@@ -48,6 +52,11 @@ def _load_pipeline_config() -> dict:
             "redis": raw.get("redis", {}),
         }
         return _cfg
+
+
+def reload_config():
+    """Force reload pipeline config from disk. Call after editing agents.yaml."""
+    _load_pipeline_config(force_reload=True)
 
 
 def _get_agent_config(agent_name: str) -> dict:
@@ -99,6 +108,8 @@ _redis_client_instance = None
 def _redis_client():
     global _redis_client_instance
     if _redis_client_instance is None:
+        if redis is None:
+            return None
         try:
             _redis_client_instance = redis.from_url(REDIS_URL, decode_responses=True)
         except Exception:
@@ -141,20 +152,18 @@ def get_progress(task_id: str) -> dict | None:
 
 # ── Stage execution ────────────────────────────────────────────────────────────
 
-def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> dict:
-    """Call LLM with optional function calling. Uses two-turn pattern:
-    Turn 1: LLM sees tools, may return tool_calls
-    Turn 2 (if tool_calls): tool results fed back, LLM returns final JSON
+def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list,
+                         max_rounds: int = 3) -> dict:
+    """Call LLM with optional function calling. Supports multi-round tool use:
+    Each round: LLM sees tools → may return tool_calls → execute → feed back.
+    Loops until LLM returns content without tool_calls, or max_rounds reached.
     """
     agent_cfg = _get_agent_config(agent_name)
     model_override = agent_cfg.get("model") or None
     temperature = agent_cfg.get("temperature", 0.0)
 
-    # Make a copy of messages to avoid mutating the caller's list
     msgs = list(messages)
 
-    # Build kwargs, only passing non-None values to avoid duplicate 'model' param
-    # (chat() internally sets model=LLM_MODEL, then passes **kw which may also contain model)
     extra_kwargs = {"temperature": temperature}
     if model_override:
         extra_kwargs["model"] = model_override
@@ -163,12 +172,13 @@ def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> di
         raw = chat(msgs, **extra_kwargs)
         return _parse_json_response(raw)
 
-    # With tools: use chat_with_tools for first turn
-    msg = chat_with_tools(msgs, tools=tool_defs, **extra_kwargs)
+    from .agent_tools import execute_tool
 
-    # Check if model requested tool calls
-    if msg.tool_calls:
-        from .agent_tools import execute_tool
+    for _round in range(max_rounds):
+        msg = chat_with_tools(msgs, tools=tool_defs, **extra_kwargs)
+
+        if not msg.tool_calls:
+            return _parse_json_response(msg.content or "")
 
         tool_results = []
         for tc in msg.tool_calls:
@@ -177,28 +187,28 @@ def _call_llm_with_tools(agent_name: str, messages: list, tool_defs: list) -> di
             except (json.JSONDecodeError, TypeError):
                 args = {}
             result = execute_tool(tc.function.name, args)
-            tool_results.append({"tool_name": tc.function.name, "result": result})
+            tool_results.append({"tool_call_id": tc.id, "tool_name": tc.function.name, "result": result})
+            _log.info("Tool call [%s] %s(%s) → %s chars",
+                      agent_name, tc.function.name, list(args.keys()),
+                      len(json.dumps(result, ensure_ascii=False)))
 
-        # Feed tool results back for final response
-        # OpenAI requires each tool response message to have a matching tool_call_id
-        tool_response_msgs = []
-        for tc in msg.tool_calls:
-            tool_result = next((tr["result"] for tr in tool_results if tr["tool_name"] == tc.function.name), {"error": "not found"})
-            tool_response_msgs.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(tool_result, ensure_ascii=False),
-            })
+        # Append assistant message with tool_calls
         msgs.append({"role": "assistant", "content": msg.content or "",
                      "tool_calls": [{"id": tc.id, "type": "function",
                      "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                      for tc in msg.tool_calls]})
-        msgs.extend(tool_response_msgs)
-        raw = chat(msgs, **extra_kwargs)
-        return _parse_json_response(raw)
+        # Append each tool response with matching tool_call_id
+        for tr in tool_results:
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tr["tool_call_id"],
+                "content": json.dumps(tr["result"], ensure_ascii=False),
+            })
 
-    # No tool calls -- treat content as final JSON
-    return _parse_json_response(msg.content or "")
+    # Exhausted max_rounds — force a final text response without tools
+    msgs.append({"role": "user", "content": "你已经使用了所有可用的工具调用轮次。请根据目前已获得的信息，立即返回要求的 JSON 格式结果。不要再调用工具。"})
+    raw = chat(msgs, **extra_kwargs)
+    return _parse_json_response(raw)
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -245,7 +255,8 @@ def _execute_stage(
         )
     messages.append({"role": "user", "content": "\n\n".join(user_parts)})
 
-    return _call_llm_with_tools(agent_name, messages, tool_defs)
+    max_rounds = agent_cfg.get("max_tool_rounds", 3)
+    return _call_llm_with_tools(agent_name, messages, tool_defs, max_rounds=max_rounds)
 
 
 # ── Pipeline runner ────────────────────────────────────────────────────────────
@@ -259,7 +270,7 @@ def run_pipeline(
     """
     _set_progress(task_id, {"stage": "start", "status": "running", "ts": time.time()})
 
-    cfg = _load_pipeline_config()
+    cfg = _load_pipeline_config(force_reload=True)
     stages = cfg.get("stages", [])
     if not stages:
         return {"status": "failed", "error": "No pipeline stages defined in agents.yaml"}
@@ -317,11 +328,31 @@ def run_pipeline(
                 "stages": stage_outputs,
             }
 
-    # Pipeline completed
+    # Pipeline completed — auto-write to RAG if review says so
     review_output = stage_outputs.get("review", {})
     final_answer = review_output.get(
         "answer_to_user", "数据采集完成，但未能生成有效回答。"
     )
+
+    if review_output.get("should_write_to_rag", False):
+        try:
+            from .agent_tools import execute_tool
+            rag_title = review_output.get("rag_title", f"采集数据-{original_question[:20]}")
+            rag_content = final_answer
+            code_output = stage_outputs.get("code", {})
+            if code_output.get("collected_data"):
+                snippets = [d.get("content_preview", "") for d in code_output["collected_data"]
+                            if d.get("content_preview")]
+                if snippets:
+                    rag_content = f"## 用户问题\n{original_question}\n\n## 摘要\n{final_answer}\n\n## 原始数据\n" + "\n---\n".join(snippets)
+            rag_result = execute_tool("write_to_rag", {
+                "title": rag_title,
+                "content": rag_content,
+                "source_url": "agent_pipeline_auto_collect",
+            })
+            _log.info("Auto-write to RAG: %s", rag_result.get("status"))
+        except Exception as e:
+            _log.warning("Failed to auto-write to RAG: %s", e)
 
     _set_progress(
         task_id,
@@ -342,31 +373,32 @@ def run_pipeline(
 
 # ── Celery task ───────────────────────────────────────────────────────────────
 
-from .celery_app import celery
+try:
+    from .celery_app import celery
 
+    @celery.task(name="agent_pipeline.run", bind=True, max_retries=0,
+                 task_ignore_result=True)
+    def run_pipeline_task(self, task_id: str, original_question: str,
+                          original_user_id: int = 0):
+        """Celery task wrapper for run_pipeline. fire-and-forget with Redis progress."""
+        _set_progress(task_id, {"stage": "queued", "status": "pending", "ts": time.time()})
 
-@celery.task(name="agent_pipeline.run", bind=True, max_retries=0,
-             task_ignore_result=True)
-def run_pipeline_task(self, task_id: str, original_question: str,
-                      original_user_id: int = 0):
-    """Celery task wrapper for run_pipeline. fire-and-forget with Redis progress.
-    On success, writes results to RAG and triggers re-query via callback.
-    """
-    _set_progress(task_id, {"stage": "queued", "status": "pending", "ts": time.time()})
+        try:
+            result = run_pipeline(task_id, original_question, original_user_id)
+            _set_progress(task_id, {
+                "stage": result.get("status", "done"),
+                "status": result.get("status", "failed"),
+                "final_answer": result.get("final_answer", "")[:500],
+                "ts": time.time(),
+            })
+            return result
+        except Exception as e:
+            _log.error(f"Pipeline task {task_id} failed: {e}", exc_info=True)
+            _set_progress(task_id, {
+                "stage": "error", "status": "failed",
+                "error": str(e)[:300], "ts": time.time(),
+            })
+            return {"status": "failed", "error": str(e)[:300]}
 
-    try:
-        result = run_pipeline(task_id, original_question, original_user_id)
-        _set_progress(task_id, {
-            "stage": result.get("status", "done"),
-            "status": result.get("status", "failed"),
-            "final_answer": result.get("final_answer", "")[:500],
-            "ts": time.time(),
-        })
-        return result
-    except Exception as e:
-        _log.error(f"Pipeline task {task_id} failed: {e}", exc_info=True)
-        _set_progress(task_id, {
-            "stage": "error", "status": "failed",
-            "error": str(e)[:300], "ts": time.time(),
-        })
-        return {"status": "failed", "error": str(e)[:300]}
+except ImportError:
+    run_pipeline_task = None

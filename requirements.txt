@@ -23,3 +23,6 @@ sentence-transformers>=3.0     # BGE-large-zh 向量化（本地，含 torch CPU
 jieba>=0.42                    # 中文分词：全文检索通道(PG simple 不切中文)入库/查询都靠它
 
 langgraph>=0.2                 # 双脑编排状态图（intent路由/重试环/hybrid并行/trace）
+
+# ===== 反爬数据采集（crawl4ai + Playwright stealth）=====
+crawl4ai>=0.9                  # 隐身浏览器抓取（Playwright+反检测+JS渲染+反爬检测）
