@@ -1,150 +1,214 @@
-# 车市镜 · 新能源汽车市场情报 Agent（EV-MarketLens）
+# EV-MarketLens（车市镜）
 
-> 一个对话式的「市场情报」Agent：用大白话提问，系统自动判断意图——要**数据**就查库出图、要**解读**就读知识库带引用作答，由 **LangGraph** 编排双脑协同。
+> 面向新能源汽车市场情报的对话式 Agent：同一个问题入口，自动选择 Text2SQL、RAG 或双路并行，返回可追溯的数据结论、图表和文档引用。
 
-把「找数据、做分析、读报告」合并进一个对话框。面向新能源汽车行业，**通用双脑引擎 + 可插拔领域包**（换行业=换一个领域包）。
+车市镜不是“套壳聊天机器人”，也不是只展示固定指标的 BI 看板。它把意图识别、结构化查询、非结构化检索、失败重试、缺数采集和 SSE 流式交互组织成一条可观测的 Agent 工作流。
 
----
+## 仓库与 Demo 状态
 
-## ✨ 核心能力
+- [`Gloria668866/ev-market-lens`](https://github.com/Gloria668866/ev-market-lens) 是唯一权威代码仓库。
+- `Gloria668866/study_code/车市镜` 只作为只读镜像，不在镜像仓库独立开发。
+- 当前版本已支持本地完整演示；生产 Compose、HTTPS、备份和初始化脚本已经配置。
+- 尚未在一台全新云服务器和全新数据卷上完成端到端验收，因此暂不宣称“生产环境已验证”，也暂无公开在线 Demo。
 
-**🧠 数据脑（Text2SQL）** —— 结构化分析
-- 自然语言 → SQL：Schema Linking → 生成 → `sqlglot` 安全护栏（只放行 SELECT）→ 只读执行 → **自校验重试**（错误回喂修正）→ 耗尽友好降级。
-- 出图不靠 LLM 拍脑袋：规则引擎产出**图表描述符**（默认图型 + 可选图型 + 维度/度量），前端据此自建图、**可切柱状/折线/饼/横条且带图例**，切换纯前端重绘。
-- 数据分析结果只给「图表 + 一句话结论/归因」，**不展示 SQL / 数据表**。
+## 核心能力
 
-**📚 知识脑（RAG）** —— 非结构化问答
-- 文档入库：解析（PyMuPDF/pdfplumber，预留 MinerU）→ **结构感知 + 父子分块**（子块检索、父块回填，受 BGE 512 token 约束）→ BGE-large-zh 向量化 → pgvector（HNSW）。
-- 在线检索：query 指令前缀 → **混合召回（向量 + 全文，RRF 融合）** → bge-reranker 重排 → **父块归并（四情形：去重/相邻合并/预算裁剪/冲突并列）** → 带引用生成。
-- **防幻觉**：无召回/低分明确说「未找到依据」，引用可点回原文（文档·章节·页码）。
+| 能力 | 当前实现 |
+|---|---|
+| 13 节点 Agent 图 | LangGraph 编排 `sql / rag / hybrid / clarify / chat` 五类意图，包含重试环、并行 fan-out 和 deferred join |
+| Text2SQL | Schema 快照/规模化筛表 → SQL 生成 → sqlglot AST 安全护栏 → 执行 → 结构与语义校验 → 图表描述符 |
+| RAG | 结构感知父子分块 → 双路召回 → RRF → BGE reranker → 证据门控 → 父块归并 → typed 带引用回答 |
+| 缺数采集 | 空结果触发异步 `Research → Plan → Code × 最多 3 并行 → Review`；过程可查询、结果按用户隔离 |
+| 多轮与记忆 | 代词/省略型追问继承上下文；完整新问题重置实体；后台提取安全的会话摘要和偏好 |
+| 产品工程 | JWT 多租户、原子日配额、共享有界问答容量、短 DB Session、SSE、管理员指标、Docker Compose、Caddy HTTPS |
 
-**🕹️ Agent 编排（LangGraph）**
-- 意图路由（规则前置 + LLM 兜底）：`sql / rag / hybrid / clarify`。
-- 支持 **重试环**（SQL 自校验）、**澄清挂起**、**双脑并行**（hybrid 同时跑两脑再合并）、全程 `trace` 可观测。
-
-**🔐 产品工程**
-- JWT 登录鉴权 + **多租户隔离**（会话/知识库按 `user_id` 隔离）；历史会话可还原（含图表/引用）。
-- FastAPI + **SSE 流式**（展示 Agent 思考过程）；Vue3 + ECharts 产品级前端。
-- 评测：RAGAS（RAG）+ 执行结果比对（Text2SQL）+ 意图混淆矩阵 + DeepEval 接 CI。
-
----
-
-## 🏗️ 架构
+## 架构
 
 ```mermaid
 flowchart LR
-    U[用户提问] --> API[FastAPI · SSE]
-    API --> G{LangGraph 意图路由}
-    G -->|sql| S[数据脑<br/>SchemaLink→GenSQL→护栏→执行→重试→图表→洞察]
-    G -->|rag| R[知识脑<br/>混合召回→重排→父块归并→带引用生成]
-    G -->|hybrid| S & R
-    S --> C[合并]
-    R --> C
-    C --> API
-    S -.查.-> PG[(PostgreSQL<br/>分析库 dim/fact)]
-    R -.检索.-> VEC[(pgvector<br/>kb_chunk 向量)]
-    R -.原文.-> MINIO[(MinIO 对象存储)]
+    U["用户问题"] --> API["FastAPI / SSE"]
+    API --> NLU{"规则零调用主路<br/>单次 typed LLM 兜底"}
+    NLU -->|sql| SQL["Text2SQL 链"]
+    NLU -->|rag| RAG["RAG 链"]
+    NLU -->|hybrid| SQL
+    NLU -->|hybrid| RAG
+    NLU -->|clarify| Q["澄清问题"]
+    NLU -->|chat| CHAT["轻量对话"]
+    SQL --> COMPOSE["compose"]
+    RAG --> COMPOSE
+    COMPOSE --> API
+    SQL --> BI[("销量星型模型")]
+    RAG --> KB[("知识库")]
+    SQL -.->|无结果| PIPE["Research → Plan → Code ≤3 → Review"]
+    PIPE -.->|Review 允许时写入发起用户私有 RAG| KB
 ```
 
----
+LangGraph 中共有 13 个节点：
 
-## 🧰 技术栈
+```text
+intent_router / clarify / chitchat
+schema_link / gen_sql / exec_sql / fix_sql / verify_sql / chart / insight
+rag_retrieve / rag_answer / compose
+```
 
-| 层 | 选型 |
+一次请求的主调用链：
+
+```text
+sql     : schema_link → gen_sql → exec_sql ↔ fix_sql → verify_sql → chart → insight → compose
+rag     : rag_retrieve → rag_answer → compose
+hybrid  : [schema_link 分支 ∥ rag_retrieve 分支] → compose(defer=True)
+clarify : clarify → END
+chat    : chitchat → END
+```
+
+## 关键工程设计
+
+### Text2SQL
+
+1. 当前六表小 schema 复用 300 秒 TTL 的完整快照；表数超过阈值后，Schema Linking 才按表语义、列名和实体信号筛选。
+2. `sqlglot` 解析 AST，只允许单条只读查询并自动限制返回规模。
+3. 执行失败会带错误信息重试，最多两次。
+4. 确定性结构护栏检查 Top-N、时间、能源类型、聚合和排名变化等高价值约束；不满足时 **fail-closed**，不把可执行但语义错误的 SQL 出图。
+5. 可选 LLM 语义校验器补充判断；校验器自身异常时 **fail-open**，避免第二次模型调用拖垮已通过结构检查的请求。
+6. 图表规则引擎输出：
+
+```json
+{
+  "default_type": "bar",
+  "applicable_types": ["bar", "hbar", "line"],
+  "dimension": "series_name",
+  "measures": ["volume"],
+  "title": "销量对比"
+}
+```
+
+前端基于同一份 rows 本地切换图型，不重新请求模型。
+
+### RAG
+
+1. 文档按标题、段落和表格结构切成检索子块与上下文父块。
+2. BGE 向量召回和 jieba 关键词召回分别取候选，再用 RRF 融合。
+3. BGE reranker 对候选重排；reranker 不可用时，证据必须同时获得向量和关键词双路支持，否则拒答。
+4. 先对 Top child 做证据充足性门控；通过后才回填父块，做同父去重、相邻合并、预算裁剪和冲突并列。
+5. 生成 JSON 经 Pydantic 校验，答案中的 `[来源 N]` 必须与 `used_sources` 一致；引用返回 `source_no / doc_id / page_no / chunk_id`。
+6. 子块持久化 embedding 模型版本与维度。旧/错版本向量不会混入当前向量空间，但仍可走关键词降级；可用 `data/reindex_embeddings.py` 重建。
+
+本地与生产使用同一检索语义，但存储和执行方式不同：
+
+| 环境 | RAG 存储与执行 |
 |---|---|
-| 编排 | LangGraph + LangChain |
-| 对话 LLM | DeepSeek-V4（OpenAI 兼容，可切换） |
-| Embedding / Rerank | BGE-large-zh（本地 1024 维） / bge-reranker |
-| 后端 | FastAPI + SSE + SQLAlchemy |
-| 前端 | Vue 3 + Vite + ECharts |
-| 数据库 | PostgreSQL + pgvector（本地 demo 用 SQLite） |
-| 存储 / 队列 | MinIO（原始文件） + Redis + Celery（异步入库） |
-| 采集 / 解析 | Scrapling（爬取） + PyMuPDF/pdfplumber（解析，预留 MinerU） |
-| 安全 | sqlglot AST 护栏 + JWT + bcrypt |
-| 评测 | RAGAS + DeepEval(CI) + Great Expectations |
-| 部署 | 单台云 VPS · Docker + docker-compose + Caddy(HTTPS) |
+| 本地演示 | SQLite + numpy 暴力向量检索，文档同步入库，适合小语料 |
+| 生产配置 | PostgreSQL + pgvector、MinIO 原文、Redis + Celery 异步入库 |
 
----
+当前 `PARSER_BACKEND=lite`，使用轻量 PDF/文本解析。MinerU 只保留为未来可插拔后端，尚未接入。
 
-## 📁 目录结构
+### 缺数链路的边界
 
-```
-bi-agent-starter/
-├── app/            后端：双脑 + 编排 + API
-│   ├── graph.py        LangGraph 双脑编排（意图路由/重试环/并行/trace）
-│   ├── text2sql.py     数据脑：生成 SQL + 自校验重试
-│   ├── sql_guard.py    SQL 安全护栏（sqlglot，仅 SELECT）
-│   ├── charts.py       图表描述符（规则引擎，非 LLM）
-│   ├── rag/            知识脑：parse/chunk/embed/store/retrieve（父子分块+混合召回+归并）
-│   ├── auth.py         登录鉴权（JWT + bcrypt）
-│   ├── kb.py           知识库 API（上传/列表/删除/问答）
-│   └── main.py         FastAPI 入口（/api/ask SSE + 历史 + 鉴权）
-├── frontend/       前端：Vue3 + ECharts（双脑分渲 / 图型切换 / 引用溯源 / 历史会话）
-├── data/           采集 / 清洗 / 语料构建脚本 + E2E demo
-├── sql/            数据库 schema（分析库 schema.sql + 应用层 schema_app.sql）
-├── eval/           评测：RAGAS / Text2SQL / 意图，含数据集与报告
-├── tests/          pytest 单测（采集/清洗/Text2SQL/RAG/Agent/接口）
-├── deploy/         部署：Dockerfile/compose/Caddy/备份/DEPLOY.md
-├── docs/           文档：PRD（数据 + Agent）+ 工作记录 + 流程图
-└── PROJECT-MEMORY/ 项目记忆（团队上下文，工具无关）
+结构化查询无结果且知识库也没有足够证据时，系统创建后台采集任务：
+
+```text
+Research → Plan → Code agents（最多 3 个并行）→ Review
 ```
 
----
+Code Agent 只调用预定义采集工具，不执行其自行生成的代码。只有 Review 返回
+`should_write_to_rag=true` 的内容才写入**任务发起用户的私有 RAG**。当前版本：
 
-## 🚀 快速开始
+- 不直接回写 `fact_sales_rank` 等销量事实表；
+- 不自动重新执行最初的 SQL；
+- 不把某位用户采集到的内容暴露给其他用户。
 
-### 0. 换电脑 / 克隆后必读
-- **仓库已附数据**：`bi_demo.db`（8072 条销量，数据脑开箱可用）、`data/raw`（原始爬取）、`data/rag_corpus`（RAG 语料）都随仓库——clone 下来数据就全，无需重爬。
-- **密钥要自己填**（绝不入库）：`cp .env.example .env` 后填 `LLM_API_KEY`（DeepSeek）等；生产参照 `.env.prod.example`。
-- **模型不在仓库**（BGE-large-zh + bge-reranker 共 ~5.6GB，过大）：首次跑 RAG 会自动从 HuggingFace/ModelScope 下载到 `models/`（或手动放）；**仅用数据脑（Text2SQL）不需要模型**。
-- **RAG 向量库不在仓库**（在 PostgreSQL 容器里）：起 `deploy/docker-compose.dev.yml` 后跑 `python data/rag_build_kb.py`，用仓库里的语料重新灌库即可。
-- `node_modules` 不入库：`cd frontend && npm install`。
+因此它是“异步研究补充”，不是无人值守的事实库自动修复。
 
-### 1. 环境
+## 可复现评测
+
+| 评测 | 当前证据 | 诚实边界 |
+|---|---|---|
+| Text2SQL | 固定 60 题执行结果等价回归集 60/60；首轮与重试明细以提交报告为准 | 固定集通过不等于未知问法 100% 泛化 |
+| 意图路由 | 110 条五分类固定回归集 110/110；固定集全部命中确定性规则，0 次 LLM 调用；延迟分位以提交报告为准 | 这是常见路由防回归，不是线上泛化率；该集合未衡量新问题的 LLM 兜底准确率 |
+| RAG | 本地 SQLite + numpy 确定性评测：13/13 正样本严格通过，claim 来源有效率、归并上下文支持率、关键锚点支持率均为 100%；7/7 负样本拒答 | 未验证最终生成答案 faithfulness/correctness，也未验证生产 PG 检索 |
+| 数据质量 | 表结构、非空、枚举、唯一键、外键等确定性断言 | 以当前 `eval/reports/data_quality.json` 为准 |
+
+评测脚本位于 [`eval/`](eval/)。自动化测试数量不在 README 固定写死，以实际命令和 CI 报告为准。
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env        # 填入 LLM_API_KEY（DeepSeek）
+python -m pytest tests/ -m "not integration" -q
+python eval/text2sql_eval.py --check-gold
+python eval/intent_eval.py
+python eval/rag_eval.py
+npm --prefix frontend run build
 ```
 
-### 2. 准备分析数据（数据脑）
+## 快速启动
+
+### Windows
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+# 填写 .env，并将 BGE embedding/reranker 权重放入 models/
+npm --prefix frontend install
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+```
+
+默认地址：
+
+- 前端：`http://127.0.0.1:5173`
+- 后端：`http://127.0.0.1:8001`
+- 深度健康检查：`http://127.0.0.1:8001/health?deep=true`
+
+停止由脚本启动的进程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
+```
+
+### 初始化演示数据
+
+零网络快速体验使用合成样例：
+
 ```bash
-python data/crawl_sales.py   # 采集懂车帝销量榜（增量、幂等）
-python data/clean_load.py    # 清洗 → 拆 6 表 → 入库（默认 SQLite bi_demo.db）
+python seed_real.py
+python data/build_local_kb.py
 ```
-> 采集与清洗逻辑详见 `docs/prd`（PRD-1）。
 
-### 3. 起服务（数据脑，零 Docker）
+`seed_real.py` 只保证 schema 和查询链路可演示，其中数值是确定性合成数据，不能作为市场结论或简历中的真实业务数据。
+
+真实销量数据使用公开 JSON API：
+
 ```bash
-# 终端1：后端
-uvicorn app.main:app --port 8000
-# 终端2：前端
-cd frontend && npm install && npm run dev
-```
-浏览器打开 `http://localhost:5173`，登录后问「2025年纯电销量Top10」→ 看流式思考过程 + 可切换图表 + 结论归因。
-
-### 4.（可选）完整双脑含 RAG
-RAG 需要 PostgreSQL+pgvector / MinIO / Redis：
-```bash
-docker compose -f deploy/docker-compose.dev.yml up -d   # 起基础设施
-python data/rag_build_kb.py                              # 构建知识库（解析→父子分块→向量化）
+python data/crawl_sales.py
+python data/clean_load.py
 ```
 
-### 5. 部署上线
-见 [`deploy/DEPLOY.md`](deploy/DEPLOY.md)：Docker + Caddy 自动 HTTPS + 定时采集 + 备份。
+采集脚本只使用 Python 标准库 HTTP，默认补齐缺失的“月份 × 能源类型”分区、强制刷新最近两个完整月，并对输出去重和原子替换。它还校验源站 `sells_rank_month`，拒绝把未发布月份的静默回退数据写成新月份。
 
----
+截至 2026-07-29，本地真实公开快照覆盖 `202401–202606`，共有 8402 条销量事实；2026-05 为 337 条、2026-06 为 331 条。源站对 2026-07 请求仍声明最新发布月为 `202606`，因此 7 月保持 0 条而不是伪造数据。生产任务每月 8、15 日 03:00 重试。
 
-## 📊 数据与规模（已验证）
-- **分析库**：409 车系 × 29 个月（2024-01~2026-04）× 纯电/插混/增程 = **8072 条真实销量事实**（数据源：懂车帝公开榜单）。
-- **知识库**：51 文档 / 757 切片（乘联会行业文章 + 车系口碑 + 多页研报）。
+## 部署
 
-## 📈 评测
-评测集与报告见 [`eval/`](eval/)：Text2SQL 执行准确率、RAGAS（context precision/recall、faithfulness、answer relevancy）、意图路由混淆矩阵。
+生产配置与操作步骤见 [`deploy/DEPLOY.md`](deploy/DEPLOY.md)。`APP_ENV=production` 时公开注册默认关闭（`ALLOW_PUBLIC_REGISTRATION=false`），问答接口默认按账号限制为 UTC 自然日 30 次（`DAILY_QUESTION_LIMIT=30`），并以 `ASK_MAX_CONCURRENCY=2` 限制每个 API 进程的模型并发。问题一旦被系统接受就原子占用额度；断连/模型失败不退额度，也不伪造 assistant 消息。只有确实需要公开注册时才显式开启，并应按模型预算调整门禁。
 
-## 📚 文档
-- 需求文档：`docs/prd/`（PRD-1 数据获取与处理、PRD-2 Agent 构建与整体项目）
-- 开发工作记录：`docs/工作记录/`（后端/前端/测试/运维，含逐步实现与流程图）
+在对外展示前，必须在目标云服务器的全新数据卷上完成一次管理员建号、登录门禁、配额、采集、Text2SQL、RAG 上传/检索、任务队列、重启恢复、HTTPS 和备份恢复验收。
 
-## ⚠️ 安全
-分析库走只读账号；`sql_guard.py` 仅放行单条 SELECT；知识库检索按 `user_id` 行级隔离；密钥只放 `.env`（已 gitignore）。
+## 已知限制
+
+- 当前公开 RAG 评测只有 13 条正样本和 7 条负样本，运行在本地 SQLite + numpy 后端，适合检索、证据覆盖和拒答防回归，不足以支持“生成答案准确”或“生产 PG 已验证”结论。
+- 本地 numpy 检索面向小语料；大语料应使用生产 pgvector 链路。
+- Embedding 与 reranker 权重不入 Git；deep health 会实际推理并核对活动向量血缘。本地已重建为 64/64 compatible，生产 PG 仍需 fresh-volume 验收。
+- 长期记忆是关键词召回，不是向量记忆系统。
+- 云端 fresh-volume 端到端验收尚未完成。
+
+## 进一步阅读
+
+- [技术设计与面试口径](docs/technical-design.md)
+- [端到端流程图](docs/diagrams/end-to-end-flow.mmd)
+- [RAG 流程图](docs/diagrams/rag-pipeline.mmd)
+- [采集刷新图](docs/diagrams/crawler-refresh-flow.mmd)
+- [生产部署图](docs/diagrams/production-deployment.mmd)
+- [项目记忆](PROJECT-MEMORY/README.md)
+- [生产部署](deploy/DEPLOY.md)
+
+## License
+
+MIT

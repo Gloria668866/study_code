@@ -1,4 +1,4 @@
-"""LangGraph 双脑编排（PRD-2 §7）：用状态图把 数据脑(Text2SQL) 与 知识脑(RAG) 真正编排起来。
+"""LangGraph 双脑编排（见 docs/technical-design.md 第 2 节）。
 
 为什么用状态图而非 if-else（§7.1）：
 - 显式 State + 节点 + 条件边，复杂多步流程可控可回溯；
@@ -23,7 +23,9 @@
                                               insight / rag_answer ───────────────→ compose → END
 """
 import json as _json
+import logging
 import operator
+import re
 import threading
 from typing import Annotated, TypedDict
 
@@ -34,8 +36,17 @@ from .config import MAX_SQL_RETRY
 from .schema_linking import link_schema
 from .sql_guard import ensure_safe, with_limit, UnsafeSQLError
 from .db import run_query
-from .text2sql import DOMAIN, FEWSHOT, SYS as SQL_SYS, _extract_sql
+from .text2sql import (
+    DOMAIN,
+    FEWSHOT,
+    SYS as SQL_SYS,
+    _brand_entity_hint,
+    _exact_brand_names,
+    _extract_sql,
+)
 from .charts import recommend_chart
+
+_log = logging.getLogger("cheshijing.graph")
 
 
 # ============================================================ State（§7.2）
@@ -48,6 +59,7 @@ class AgentState(TypedDict, total=False):
     confidence: float                    # 意图置信度 0-1
     entities: dict                       # 本轮提取实体 {brands,models,time,metrics,energy_types}
     active_entities: dict                # 跨轮累积实体记忆（会话级）
+    uses_history_entities: bool          # 本轮是否确实含指代/省略，需要继承历史实体
     normalized_question: str            # LLM 规范化后的问题（实体补全/消歧）
     # —— 业务状态 ——
     clarify_question: str               # 需澄清时的反问
@@ -67,6 +79,7 @@ class AgentState(TypedDict, total=False):
     final_answer: str                   # 汇总答案
     degraded: bool                      # SQL 重试耗尽降级标记
     no_data: bool                       # SQL 执行成功但结果集为空（不强制覆盖 intent）
+    task_id: str                        # 无数据时启动的智能采集任务
     trace: Annotated[list, operator.add]  # 每步留痕（并行分支用 add 合并）
 
 
@@ -115,6 +128,38 @@ def _build_active_entities_from_history(history: list) -> dict:
     return _extract_entities_from_text(combined)
 
 
+_CONTEXT_REFERENCE_MARKERS = (
+    "它", "这辆", "那辆", "这款", "那款", "该车", "该品牌", "这个品牌",
+    "那个品牌", "上述", "上面", "前面", "前者", "后者", "这个结论",
+    "这个数据", "继续", "进一步", "再看", "换成", "按月拆开", "对比去年",
+)
+
+
+def _needs_history_context(question: str) -> bool:
+    """Only inherit conversation entities for explicit pronouns or elliptical follow-ups."""
+    q = (question or "").strip()
+    if not q:
+        return False
+    if any(marker in q for marker in _CONTEXT_REFERENCE_MARKERS):
+        return True
+    if q.startswith(("那", "那么", "然后")) or q.endswith(("呢", "又如何", "怎么样呢")):
+        return True
+    # Very short follow-ups such as “销量怎么样” or “价格多少” are elliptical.
+    return len(q) <= 10 and bool(re.search(r"(销量|价格|排名|口碑|趋势).*(多少|如何|怎样|怎么样)?[？?]?$", q))
+
+
+def _filter_entities_to_question(entities: dict, question: str) -> dict:
+    """Drop brand/model values hallucinated from history for a standalone question."""
+    q_lower = (question or "").lower()
+    filtered = dict(entities or {})
+    for key in ("brands", "models"):
+        filtered[key] = [
+            value for value in (filtered.get(key) or [])
+            if str(value).lower() in q_lower
+        ]
+    return filtered
+
+
 # ============================================================ 对话上下文构建
 def _history_block(state) -> str:
     """
@@ -122,6 +167,9 @@ def _history_block(state) -> str:
     1. 实体记忆（本会话已识别品牌/车系）——解决「那辆车」「它」跨轮指代
     2. 近期消息摘要——解决追问语境
     """
+    if state.get("uses_history_entities") is False:
+        return ""
+
     h = state.get("history") or []
     active = state.get("active_entities") or {}
 
@@ -140,10 +188,16 @@ def _history_block(state) -> str:
     if entity_lines:
         parts.append("【实体记忆】（代词/省略时必须从此处补全实体）\n" + "\n".join(entity_lines))
 
+    # 层1.5：长期记忆（从 history 中提取 system 角色的 memory_block）
+    for m in h:
+        if m.get("role") == "system" and m.get("content"):
+            parts.append(m["content"].strip())
+
     # 层2：最近消息（截断，只保留语义上有用的部分）
-    if h:
+    user_msgs = [m for m in h if m.get("role") != "system"]
+    if user_msgs:
         lines = []
-        for m in h[-8:]:
+        for m in user_msgs[-8:]:
             role = "用户" if m.get("role") == "user" else "助手"
             c = (m.get("content") or "").strip().replace("\n", " ")[:300]
             if c:
@@ -203,43 +257,48 @@ def _build_clarify_question_from_slots(slots: list) -> str:
     return base
 
 
-# ============================================================ 追问检测（语义级，不硬编码关键词）
+# ============================================================ 多轮改写（Query Rewrite）
 
-_FOLLOWUP_DETECT_SYS = """\
-判断用户的新消息是「对上文的追问/澄清」还是「独立的新问题」。
+_REWRITE_SYS = """\
+你是多轮对话改写器。将用户的新消息改写为一句独立、完整的问题（不依赖上下文即可理解）。
 
-追问(true) = 答案已在上文中，只是追问细节/元信息。例：
-- "这是几几年的数据" "怎么算的" "数据来源是什么" "为什么是这个数" → true
+规则：
+1. 补全省略的实体（品牌/车系/时间）——从对话历史中找到被省略的主语/宾语
+2. 解析代词（"它""那个""这个品牌"）为具体实体
+3. 保留用户原始意图中的新维度（月份/趋势/对比/口碑等）
+4. 如果问题已经完整独立，原样返回
 
-新问题(false) = 需要查数据库/检索文档才能回答，即使用了代词。例：
-- "那它的口碑呢" "帮我看看趋势" "对比一下XX" "那XX呢" → false
-- 包含新维度（口碑/趋势/对比/预测/原因分析）→ false
+特殊情况——纯元信息追问：
+- 用户只是在问上一条回答本身的属性（时间范围、数据来源、计算方式、为什么是这个数）
+- 不需要查数据库/检索文档就能回答
+- 例："这是几几年的""怎么算的""数据来源是哪""为什么是这个数"
+- 此时 is_meta=true，rewritten 保持原文
 
-默认倾向 false（新问题），只有明确是追问细节时才 true。
-只输出 JSON：{"is_followup": true/false}"""
+只输出 JSON：{"rewritten": "改写后的完整问题", "is_meta": false}"""
 
 
-def _detect_followup(question: str, history: list) -> bool:
-    """语义判断：当前问题是否是对上文的追问。有历史时才调用，轻量单次 LLM。"""
-    if not history:
-        return False
+def _rewrite_query(question: str, history: list) -> dict:
+    """多轮改写：将省略/代词问题改写为独立完整问题，或识别为纯元信息追问。"""
     last_msgs = []
-    for m in history[-4:]:
+    for m in history[-6:]:
         role = "用户" if m.get("role") == "user" else "助手"
-        last_msgs.append(f"{role}：{(m.get('content') or '')[:200]}")
+        last_msgs.append(f"{role}：{(m.get('content') or '')[:300]}")
     context = "\n".join(last_msgs)
     try:
         raw = chat([
-            {"role": "system", "content": _FOLLOWUP_DETECT_SYS},
+            {"role": "system", "content": _REWRITE_SYS},
             {"role": "user", "content": f"对话历史：\n{context}\n\n新消息：{question}"},
         ], temperature=0.0)
-        import json as _json
         s, e = raw.find("{"), raw.rfind("}") + 1
         if s >= 0 and e > s:
-            return bool(_json.loads(raw[s:e]).get("is_followup", False))
+            parsed = _json.loads(raw[s:e])
+            return {
+                "rewritten": parsed.get("rewritten", question),
+                "is_meta": bool(parsed.get("is_meta", False)),
+            }
     except Exception:
         pass
-    return False
+    return {"rewritten": question, "is_meta": False}
 
 
 # ============================================================ 意图路由节点
@@ -247,22 +306,32 @@ def intent_router(state: AgentState):
     """意图路由：委托给 nlu.classify()，保留跨轮实体记忆更新。"""
     q = state["question"]
     history = state.get("history") or []
+    uses_history = bool(history and _needs_history_context(q))
 
-    # 前置检测：追问上文 → 直接走 chat 路径，不查数据
-    if history and _detect_followup(q, history):
-        return {
-            "intent": "chat",
-            "_is_followup": True,
-            "confidence": 0.9,
-            "entities": {},
-            "active_entities": state.get("active_entities") or {},
-            "normalized_question": q,
-            "retry_count": 0,
-            "trace": [_t("intent_router", intent="chat", path="followup_detected")],
-        }
+    # 只有明确含指代/省略时才改写。完整独立问题必须与旧主题隔离。
+    if uses_history:
+        rw = _rewrite_query(q, history)
+        if rw["is_meta"]:
+            return {
+                "intent": "chat",
+                "_is_followup": True,
+                "confidence": 0.9,
+                "entities": {},
+                "active_entities": state.get("active_entities") or {},
+                "uses_history_entities": True,
+                "normalized_question": q,
+                "retry_count": 0,
+                "trace": [_t("intent_router", intent="chat", path="meta_question",
+                             rewritten=q)],
+            }
+        q = rw["rewritten"]
 
     active_ents = state.get("active_entities") or _build_active_entities_from_history(history)
-    ctx = _history_block({**state, "active_entities": active_ents})
+    ctx = _history_block({
+        **state,
+        "active_entities": active_ents,
+        "uses_history_entities": uses_history,
+    }) if uses_history else ""
 
     last_assistant = ""
     for m in reversed(history):
@@ -274,10 +343,12 @@ def intent_router(state: AgentState):
 
     intent = result["intent"]
     entities = result.get("entities") or {}
+    if not uses_history:
+        entities = _filter_entities_to_question(entities, q)
     source = result.get("source", "")
 
     # No-data guard: last assistant had no-data signal → override sql/hybrid → rag
-    if any(sig in last_assistant for sig in _NO_DATA_SIGNALS):
+    if uses_history and any(sig in last_assistant for sig in _NO_DATA_SIGNALS):
         if intent in ("sql", "hybrid"):
             intent = "rag"
             result["confidence"] = min(result.get("confidence", 0.8), 0.7)
@@ -287,7 +358,8 @@ def intent_router(state: AgentState):
     if intent in ("sql", "hybrid") and not is_complete:
         intent = "clarify"
 
-    new_active = _merge_entities(active_ents, entities)
+    # Topic switches replace active memory; true follow-ups accumulate it.
+    new_active = _merge_entities(active_ents if uses_history else {}, entities)
 
     # Build trace: distinguish greeting fast-path from LLM-classified
     if source == "layer1_greeting":
@@ -295,18 +367,28 @@ def intent_router(state: AgentState):
         confidence = result.get("confidence", 1.0)
     else:
         confidence = result.get("confidence", 0.8)
+        llm_classified = bool(
+            result.get(
+                "llm_calls",
+                1 if not source else int(source == "layer2_llm"),
+            )
+        )
         trace_entry = _t("intent_router",
                          intent=intent,
                          confidence=round(confidence, 2),
                          entities=entities,
                          is_complete=result.get("is_complete", True),
-                         llm_classified=True)
+                         nlu_source=source or "unknown",
+                         nlu_latency_ms=result.get("nlu_latency_ms"),
+                         nlu_llm_calls=result.get("llm_calls"),
+                         llm_classified=llm_classified)
 
     upd: dict = {
         "intent": intent,
         "confidence": confidence,
         "entities": entities,
         "active_entities": new_active,
+        "uses_history_entities": uses_history,
         "normalized_question": result.get("normalized_question", q),
         "retry_count": 0,
         "trace": [trace_entry],
@@ -383,7 +465,7 @@ def _gen_sql_messages(state):
     return [
         {"role": "system", "content": SQL_SYS},
         {"role": "user", "content": (
-            f"{DOMAIN}\n\n{entity_ctx}{FEWSHOT}\n"
+            f"{DOMAIN}\n\n{_brand_entity_hint(q)}{entity_ctx}{FEWSHOT}\n"
             f"可用表结构:\n{state['linked_schema']}\n\n"
             f"{_history_block(state)}Q: {q}\nSQL:"
         )},
@@ -426,14 +508,258 @@ _VERIFY_SYS = (
 )
 
 
+def _has_meaningful_rows(rows: list | None) -> bool:
+    """Treat aggregate-only NULL rows as empty while preserving COUNT(*) = 0."""
+    if not rows:
+        return False
+    for row in rows:
+        if isinstance(row, dict):
+            values = row.values()
+        elif isinstance(row, (list, tuple)):
+            values = row
+        else:
+            values = (row,)
+        if any(value is not None for value in values):
+            return True
+    return False
+
+
+def _validate_sql_shape(
+    question: str, sql: str, cols: list | None = None, rows: list | None = None
+) -> tuple[bool, str]:
+    """Deterministic semantic checks for common 'executable but wrong' SQL shapes."""
+    from sqlglot import exp, parse_one
+
+    q = (question or "").strip()
+    try:
+        tree = parse_one(sql, read="sqlite")
+    except Exception as exc:
+        return False, f"SQL 无法解析：{exc}"
+
+    top_match = re.search(r"(?i)top\s*(\d+)", q) or re.search(r"前\s*(\d+)", q)
+    if not top_match:
+        top_match = re.search(r"(?:最高|最多)(?:的)?\s*(\d+)", q)
+    if top_match:
+        requested = int(top_match.group(1))
+        if tree.args.get("order") is None:
+            return False, f"Top{requested} 查询缺少 ORDER BY 排序"
+        aggregates = list(tree.find_all(exp.AggFunc))
+        if aggregates and tree.args.get("group") is None:
+            return False, f"Top{requested} 聚合查询缺少 GROUP BY 维度"
+        limit_node = tree.args.get("limit")
+        try:
+            actual_limit = int(limit_node.expression.this) if limit_node else None
+        except (AttributeError, TypeError, ValueError):
+            actual_limit = None
+        if actual_limit is None or actual_limit > requested:
+            return False, f"Top{requested} 查询的 LIMIT 必须不大于 {requested}"
+
+    sql_lower = (sql or "").lower()
+    sql_compact = re.sub(r"\s+", "", sql_lower)
+    for brand_name in _exact_brand_names(q):
+        brand_filter = re.compile(
+            rf"(?:\b\w+\.)?brand_name\s*(?:like|=)\s*"
+            rf"['\"]%?{re.escape(brand_name.lower())}%?['\"]",
+            flags=re.I,
+        )
+        brand_in = re.compile(
+            rf"(?:\b\w+\.)?brand_name\s+in\s*\([^)]*"
+            rf"['\"]{re.escape(brand_name.lower())}['\"]",
+            flags=re.I,
+        )
+        if not brand_filter.search(sql_lower) and not brand_in.search(sql_lower):
+            return (
+                False,
+                f"完整品牌“{brand_name}”必须整体过滤 dim_brand.brand_name，"
+                "不能拆成母品牌与车系关键词",
+            )
+    energy_requirements = {
+        "纯电": ("纯电", 1),
+        "插混": ("插混", 2),
+        "增程": ("增程", 3),
+    }
+    mentioned_energy = [
+        (label, literal, code)
+        for label, (literal, code) in energy_requirements.items()
+        if label in q
+    ]
+    asks_overall_series_winner = (
+        "品牌" not in q
+        and any(token in q for token in ("销量第一", "销量最高", "卖得最多"))
+        and not mentioned_energy
+    )
+    if asks_overall_series_winner:
+        where_sql = str(tree.args.get("where") or "").lower()
+        if re.search(r"(?:\b\w+\.)?rank\s*=\s*1\b", where_sql):
+            return (
+                False,
+                "rank=1 只是能源类型分区冠军；未指定能源类型的销量冠军"
+                "必须按 volume 或 SUM(volume) 全局降序",
+            )
+        if tree.args.get("order") is None:
+            return False, "全市场销量冠军查询必须按销量降序"
+        limit_node = tree.args.get("limit")
+        try:
+            winner_limit = int(limit_node.expression.this) if limit_node else None
+        except (AttributeError, TypeError, ValueError):
+            winner_limit = None
+        if winner_limit != 1:
+            return False, "全市场销量冠军查询必须 LIMIT 1"
+    # 单动力类型问题必须有精确过滤。多动力类型问题由下面的分组/多列规则
+    # 约束，不能把合法的 IN (1,2,3) 误判成“缺少纯电过滤”。
+    if len(mentioned_energy) == 1:
+        label, literal, code = mentioned_energy[0]
+        has_numeric_filter = bool(
+            re.search(rf"new_energy_type={code}(?!\d)", sql_compact)
+            or re.search(
+                rf"new_energy_typein\([^)]*(?<!\d){code}(?!\d)",
+                sql_compact,
+            )
+        )
+        if literal.lower() not in sql_lower and not has_numeric_filter:
+            return False, f"问题要求{label}口径，但 SQL 没有对应过滤条件"
+
+    for year in re.findall(r"20\d{2}", q):
+        if year not in sql:
+            return False, f"问题要求 {year} 年，但 SQL 没有对应时间过滤"
+
+    cumulative = any(token in q for token in ("累计销量", "总销量", "一共卖了", "总共卖了"))
+    asks_breakdown = any(token in q for token in (
+        "各车系", "分别", "对比", "谁", "排行", "排名", "Top", "top", "前十", "每个",
+        "各动力类型", "各有", "哪个品牌", "哪家品牌", "最高", "最多", "趋势",
+    ))
+    if cumulative and not asks_breakdown:
+        if tree.args.get("group") is not None or len(cols or []) > 1:
+            return False, "累计销量要求单一汇总值，不应按车系/品牌分组返回多列"
+        explicit_time = bool(
+            re.search(r"20\d{2}|今年|去年|前年|本月|上月|近\d+[年月]", q)
+        )
+        where_sql = str(tree.args.get("where") or "").lower()
+        if not explicit_time and re.search(
+            r"(?:\byear\b|\bmonth\b|\bdate_id\b|\bym\b)", where_sql
+        ):
+            return False, "未指定时间的累计销量应覆盖全部数据，不应额外限定时间"
+
+    monthly_trend = any(token in q for token in ("每月", "按月", "月度趋势"))
+    if monthly_trend:
+        group_sql = str(tree.args.get("group") or "").lower()
+        order_sql = str(tree.args.get("order") or "").lower()
+        has_month_dimension = any(
+            token in group_sql for token in ("ym", "month", "date_id")
+        )
+        if not has_month_dimension:
+            return False, "按月趋势必须按 dim_date.ym（或 month/date_id）分组"
+        if not any(token in order_sql for token in ("ym", "month", "date_id")):
+            return False, "按月趋势必须按时间字段排序"
+
+    asks_brand_winner = (
+        ("哪个品牌" in q or "哪家品牌" in q)
+        and any(token in q for token in ("最高", "最多", "第一"))
+    )
+    if asks_brand_winner:
+        select_sql = " ".join(str(expr).lower() for expr in tree.expressions)
+        if "brand_name" not in select_sql:
+            return False, "品牌冠军查询必须返回品牌名，不能只返回最大销量值"
+        if tree.args.get("group") is None or tree.args.get("order") is None:
+            return False, "品牌冠军查询必须按品牌聚合并按销量排序"
+        limit_node = tree.args.get("limit")
+        try:
+            winner_limit = int(limit_node.expression.this) if limit_node else None
+        except (AttributeError, TypeError, ValueError):
+            winner_limit = None
+        if winner_limit != 1:
+            return False, "品牌冠军查询必须 LIMIT 1"
+
+    low_price = re.search(r"指导价(?:低于|小于)\s*(\d+(?:\.\d+)?)\s*万?", q)
+    if low_price and "guide_price_max" not in sql_lower:
+        return False, "整车系指导价低于阈值必须使用 guide_price_max"
+    high_price = re.search(r"指导价\s*(\d+(?:\.\d+)?)\s*万?以上", q)
+    if high_price and "guide_price_min" not in sql_lower:
+        return False, "整车系指导价高于阈值必须使用 guide_price_min"
+
+    if any(token in q for token in ("排名上升", "排名下降", "优于上期", "较上期")):
+        if "last_rank" not in sql_lower:
+            return False, "排名变化查询必须使用 last_rank"
+        has_comparison = bool(re.search(
+            r"(?:\brank\b\s*[<>]\s*[\w.]*last_rank|"
+            r"last_rank\s*[<>]\s*[\w.]*\brank\b)",
+            sql_lower,
+        ))
+        if not has_comparison:
+            return False, "排名变化查询必须比较 rank 与 last_rank"
+
+    if (
+        "各动力类型" in q
+        or len(mentioned_energy) >= 2
+        and any(token in q for token in ("各", "分别", "与", "对比"))
+    ):
+        has_energy_group = (
+            tree.args.get("group") is not None
+            and "new_energy_type" in str(tree.args.get("group")).lower()
+        )
+        if not has_energy_group and len(cols or []) < 2:
+            return False, "多动力类型对比必须按 new_energy_type 分组或返回多个聚合列"
+
+    if rows is not None and top_match and len(rows) == 1 and requested > 1:
+        return False, f"Top{requested} 查询只返回 1 行，疑似聚合维度错误"
+
+    return True, ""
+
+
 def verify_sql(state: AgentState):
     """Text2SQL 语义自校验（§4.6）：SQL 能跑通≠语义对。把『能跑但答非所问』纳入闭环。
     FAIL-OPEN：开关关闭 / 无数据 / 已无重试预算 / 校验自身异常 —— 一律放行，绝不比不校验更差。"""
     from .config import SEMANTIC_CHECK
     rows = state.get("rows") or []
-    # 不校验的情形：开关关 / 空结果(无可核对) / 重试预算已耗尽(再判也回不了 fix_sql)
-    if not SEMANTIC_CHECK or not rows or state.get("retry_count", 0) >= MAX_SQL_RETRY:
+    # 开关关 / 空结果无可核对时放行。预算耗尽时仍执行确定性护栏，
+    # 只跳过 LLM 审核；否则最后一次错误 SQL 会被当成正确结果出图。
+    if not SEMANTIC_CHECK or not _has_meaningful_rows(rows):
         return {"sql_verified": True, "trace": [_t("verify_sql", checked=False)]}
+    exhausted = state.get("retry_count", 0) >= MAX_SQL_RETRY
+    shape_ok, shape_reason = _validate_sql_shape(
+        state.get("normalized_question") or state.get("question", ""),
+        state.get("sql", ""),
+        state.get("cols") or [],
+        rows,
+    )
+    if not shape_ok:
+        failure = {
+            "sql_verified": False,
+            "sql_error": f"SQL 语义结构不匹配：{shape_reason}。请修正 SQL。",
+            "trace": [_t("verify_sql", ok=False, deterministic=True,
+                         exhausted=exhausted, reason=shape_reason[:100])],
+        }
+        if exhausted:
+            failure.update({"rows": [], "cols": [], "degraded": True})
+        return failure
+
+    if not state.get("uses_history_entities", False):
+        from .nlu import _get_keyword_brands
+        q = state.get("normalized_question") or state.get("question", "")
+        sql_text = state.get("sql", "")
+        stale_brands = [
+            brand for brand in _get_keyword_brands()
+            if brand in sql_text and brand not in q
+        ]
+        if stale_brands:
+            reason = f"SQL 引入了当前问题未提及的品牌：{', '.join(stale_brands[:3])}"
+            failure = {
+                "sql_verified": False,
+                "sql_error": f"{reason}。请移除历史主题污染后重写 SQL。",
+                "trace": [_t("verify_sql", ok=False, deterministic=True,
+                             exhausted=exhausted, reason=reason)],
+            }
+            if exhausted:
+                failure.update({"rows": [], "cols": [], "degraded": True})
+            return failure
+
+    if exhausted:
+        return {
+            "sql_verified": True,
+            "trace": [_t("verify_sql", checked=True, deterministic=True,
+                         llm_skipped="retry_budget_exhausted")],
+        }
+
     try:
         out = chat([
             {"role": "system", "content": _VERIFY_SYS},
@@ -455,7 +781,7 @@ def verify_sql(state: AgentState):
 def chart(state: AgentState):
     """规则引擎产出图表描述符（§8）。无数据则跳过。"""
     rows = state.get("rows", [])
-    if not rows:
+    if not _has_meaningful_rows(rows):
         return {"chart": None, "trace": [_t("chart", skipped="no_rows")]}
     spec = recommend_chart(state.get("cols", []), rows, state["question"])
     return {"chart": spec, "trace": [_t("chart", default_type=(spec or {}).get("default_type"))]}
@@ -473,39 +799,29 @@ def insight(state: AgentState):
     cols = state.get("cols", []) or []
 
     # 路径A：SQL 重试耗尽
-    if state.get("sql_error") and not rows:
+    has_rows = _has_meaningful_rows(rows)
+    if state.get("sql_error") and not has_rows:
         return {"degraded": True,
                 "insight": "抱歉，这个问题我多次尝试都没能生成可用的查询，可能是口径不清或超出当前数据范围。"
                            "可换个问法或缩小范围（如指定车系/月份）。",
                 "trace": [_t("insight", degraded=True)]}
 
     # 路径B：SQL 执行成功但结果为空
-    if not rows:
+    if not has_rows:
         q = state.get("question", "")
-        all_text = q
-        for m in (state.get("history") or []):
-            all_text += " " + (m.get("content") or "")
-        all_text += " " + (state.get("sql") or "")
-        brand_hint = ""
-        from .nlu import _get_keyword_brands
-        for word in _get_keyword_brands():
-            if word in all_text:
-                brand_hint = f"「{word}」可能不在当前数据库覆盖范围内（目前覆盖 101 个品牌，以国产新能源为主）。"
-                break
+        empty_hint = (
+            "当前筛选条件下没有匹配记录（可能是时间超出数据范围、"
+            "车型尚未覆盖或该口径暂无数据）。"
+        )
 
         # Step 1: 先查 RAG 知识库 — 之前 pipeline 采集的数据可能已经存在
         try:
             from .rag import retrieve as R
-            from .config import RERANK_SCORE_MIN
             rag_chunks = R.hybrid_recall(state.get("user_id", 0), q)
             if rag_chunks:
                 top, used_rr = R.rerank(q, rag_chunks)
-                # Score filter: only apply when real reranker is available
-                # RRF scores are ~0.01-0.03, reranker scores are 0-1
-                score_ok = True
-                if used_rr and top:
-                    score_ok = top[0].get("score_final", 0) >= RERANK_SCORE_MIN
-                if top and score_ok:
+                evidence_ok, _ = R.evidence_is_sufficient(top, used_rr, q)
+                if top and evidence_ok:
                     blocks = R.merge_parents(top)
                     res = R.generate(q, blocks)
                     if res.get("has_answer"):
@@ -520,49 +836,41 @@ def insight(state: AgentState):
         # Step 2: RAG 没命中 → 触发 pipeline 采集
         import secrets
         task_id = "agent_" + secrets.token_hex(8)
-        pipeline_result = None
-
         try:
-            from .agent_pipeline import run_pipeline_task
-            if run_pipeline_task is None:
-                raise ImportError("Celery not available")
-            run_pipeline_task.delay(task_id=task_id, original_question=q,
-                                    original_user_id=state.get("user_id", 0))
-            return {"no_data": True,
-                    "task_id": task_id,
-                    "insight": f"数据库暂无相关数据。{brand_hint}"
-                               f"已启动智能数据采集（任务ID：{task_id[:12]}…），预计需要 30 秒到 2 分钟。\n"
-                               f"采集完成后将自动为您重新查询，请稍候…",
-                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="async")]}
-        except Exception:
-            pass
-
-        # Sync fallback: run pipeline and USE the result directly
-        try:
-            from .agent_pipeline import run_pipeline
-            pipeline_result = run_pipeline(task_id, q, state.get("user_id", 0))
-        except Exception:
-            pass
-
-        if pipeline_result and pipeline_result.get("status") == "completed":
-            final_answer = pipeline_result.get("final_answer", "")
-            if final_answer and "数据采集完成" not in final_answer:
+            from .agent_pipeline import enqueue_pipeline
+            queued = enqueue_pipeline(
+                task_id=task_id,
+                original_question=q,
+                original_user_id=state.get("user_id", 0),
+            )
+            if queued.get("accepted"):
+                mode = queued.get("mode", "background")
+                eta = "30 秒到 2 分钟" if mode == "celery" else "约 1 到 3 分钟"
                 return {"no_data": True,
                         "task_id": task_id,
-                        "insight": f"📊 智能数据采集结果：\n\n{final_answer}",
-                        "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_ok")]}
-            return {"no_data": True,
-                    "task_id": task_id,
-                    "insight": f"数据库暂无相关数据。{brand_hint}"
-                               f"已尝试在线搜索但未找到足够可靠的数据。建议：\n"
-                               f"1. 换个更具体的品牌/车系名称\n"
-                               f"2. 尝试更宽泛的问题（如 '2025年纯电销量Top10'）",
-                    "trace": [_t("insight", empty_result=True, task_id=task_id, mode="sync_insufficient")]}
+                        "insight": f"数据库暂无相关数据。{empty_hint}"
+                                   f"已启动智能数据采集（任务ID：{task_id[:12]}…），预计需要 {eta}。\n"
+                                   f"页面会持续显示任务进度，完成后可直接查看采集结论。",
+                        "trace": [_t("insight", empty_result=True, task_id=task_id,
+                                     mode=mode)]}
 
-        return {"no_data": True, "insight": f"未查询到相关数据。{brand_hint}请尝试：\n"
-                       f"1. 换一个品牌或车系名称（如 '比亚迪'、'小米SU7'）\n"
-                       f"2. 问更宽泛的问题（如 '2025年纯电销量Top10'）",
-                "trace": [_t("insight", empty_result=True)]}
+            _log.warning("Collection queue unavailable for %s: %s",
+                         task_id, queued.get("error", "unknown"))
+            return {
+                "no_data": True,
+                "insight": f"数据库暂无相关数据。{empty_hint}"
+                           "智能采集服务暂不可用，请确认 Redis/Celery 已启动后重试；"
+                           "当前请求没有在后台偷偷同步执行。",
+                "trace": [_t("insight", empty_result=True,
+                             mode="queue_unavailable")],
+            }
+        except Exception as exc:
+            _log.warning("Collection enqueue failed for %s: %s", task_id, exc)
+            return {"no_data": True,
+                    "insight": f"数据库暂无相关数据。{empty_hint}"
+                               "智能采集服务暂不可用，请稍后重试。",
+                    "trace": [_t("insight", empty_result=True,
+                                 mode="queue_error", error=str(exc)[:100])]}
 
     # 路径C：正常结果 → LLM 生成洞察
     txt = chat([{"role": "system", "content": _INSIGHT_SYS},
@@ -580,9 +888,20 @@ def rag_retrieve(state: AgentState):
         return {"chunks": [], "trace": [_t("rag_retrieve", recall=0)]}
     top, used_rr = R.rerank(state["question"], children)
     top_score = top[0]["score_final"] if top else 0.0
-    from .config import RERANK_SCORE_MIN
-    if used_rr and top_score < RERANK_SCORE_MIN:
-        return {"chunks": [], "trace": [_t("rag_retrieve", recall=len(children), low_score=round(top_score, 3))]}
+    evidence_ok, evidence_reason = R.evidence_is_sufficient(
+        top, used_rr, state["question"]
+    )
+    if not evidence_ok:
+        return {
+            "chunks": [],
+            "trace": [_t(
+                "rag_retrieve",
+                recall=len(children),
+                reason=evidence_reason,
+                top_score=round(top_score, 3),
+                reranker=used_rr,
+            )],
+        }
     blocks = R.merge_parents(top)
     return {"chunks": blocks,
             "trace": [_t("rag_retrieve", recall=len(children), parents=len(blocks),
@@ -642,7 +961,9 @@ def route_exec(state: AgentState):
 def route_verify(state: AgentState):
     if state.get("sql_verified", True):
         return "chart"                              # 语义 OK → 出图
-    return "fix_sql"                                # 语义不匹配 → 回 fix_sql 重生成（verify 已确认仍有预算）
+    if state.get("retry_count", 0) >= MAX_SQL_RETRY:
+        return "insight"                            # 确定性护栏仍失败 → 诚实降级，不输出错误图表
+    return "fix_sql"                                # 语义不匹配 → 回 fix_sql 重生成
 
 
 # ============================================================ 建图
@@ -662,7 +983,9 @@ def build_graph():
     g.add_edge("schema_link", "gen_sql")
     g.add_edge("gen_sql", "exec_sql")
     g.add_conditional_edges("exec_sql", route_exec, ["verify_sql", "fix_sql", "insight"])
-    g.add_conditional_edges("verify_sql", route_verify, ["chart", "fix_sql"])  # 语义校验 → 出图 / 回修
+    g.add_conditional_edges(
+        "verify_sql", route_verify, ["chart", "fix_sql", "insight"]
+    )                                               # 语义校验 → 出图 / 回修 / 耗尽降级
     g.add_edge("fix_sql", "exec_sql")               # 重试环（执行报错 + 语义不匹配 共用）
     g.add_edge("chart", "insight")
     g.add_edge("insight", "compose")
