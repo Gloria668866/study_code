@@ -49,11 +49,17 @@ jobs:
         run: |
           cp .env.prod.example .env.prod
           cd deploy && docker compose --env-file ../.env.prod -f docker-compose.prod.yml config -q
+      # buildx 的 gRPC 会话不支持非 ASCII 构建上下文（docker/buildx#3972）：
+      # 中文目录名 `车市镜/` 会触发 "x-docker-expose-session-sharedkey ... non-printable ASCII"。
+      # 先复制到 ASCII 路径再构建，仓库目录名保持不变。
+      - name: 准备 ASCII 构建上下文
+        run: |
+          cp -a "$GITHUB_WORKSPACE/车市镜" /tmp/cheshijing-ctx
       - name: 构建后端镜像
         uses: docker/build-push-action@v6
         with:
-          context: ./车市镜
-          file: ./车市镜/deploy/Dockerfile.api
+          context: /tmp/cheshijing-ctx
+          file: /tmp/cheshijing-ctx/deploy/Dockerfile.api
           push: false
           tags: carmirror-app:ci
           cache-from: type=gha
@@ -61,8 +67,8 @@ jobs:
       - name: 构建前端镜像
         uses: docker/build-push-action@v6
         with:
-          context: ./车市镜
-          file: ./车市镜/deploy/Dockerfile.web
+          context: /tmp/cheshijing-ctx
+          file: /tmp/cheshijing-ctx/deploy/Dockerfile.web
           push: false
           tags: carmirror-web:ci
       # 可选：推 GHCR（去掉注释 + 配 packages 写权限即可）；部署到服务器走 SSH/watchtower。
