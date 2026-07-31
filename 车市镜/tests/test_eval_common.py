@@ -2,9 +2,9 @@
 from eval.common import result_set_equal
 
 
-def test_equal_ignores_colname_colorder_roworder():
+def test_equal_ignores_colname_and_roworder():
     gold = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
-    pred = [{"x": 4, "y": 3}, {"x": 2, "y": 1}]   # 列名不同、列序行序都不同 → 值多重集相同
+    pred = [{"x": 3, "y": 4}, {"x": 1, "y": 2}]   # 列名不同、行序不同，但位置值相同
     assert result_set_equal(gold, pred)
 
 

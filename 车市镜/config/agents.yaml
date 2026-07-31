@@ -13,6 +13,7 @@ pipeline:
       agent: code_agent
       depends_on: [plan]
       parallel: true               # one instance per plan item
+      max_parallel: 3              # bounded fan-out; protects API quota and 2C8G demo hosts
       description: "Execute web collection in parallel"
     - id: review
       agent: review_agent
@@ -56,7 +57,7 @@ agents:
             "id": "task_1",
             "description": "采集任务描述",
             "source": {"name": "来源名", "url": "https://...", "type": "html|api|search"},
-            "tool": "http_get|search_web",
+            "tool": "http_get|browser_fetch|search_web",
             "priority": 1
           }
         ],
@@ -73,14 +74,16 @@ agents:
 
       执行策略（严格按顺序）：
       1. 第一轮：用 search_web 搜索 2-3 个不同关键词（来自上游 research 的 search_queries）
-      2. 第二轮：从搜索结果中选 1-2 个看起来有数字/数据的 URL（懂车帝/汽车之家/新闻网站），用 http_get 尝试获取
-      3. 如果 http_get 失败（403/超时/连接断开）：不要重试，直接用搜索结果的 snippet 作为数据
+      2. 第二轮：从搜索结果中选 1-2 个有数据的 URL，根据网站选择工具：
+         - 懂车帝/汽车之家/乘联会/品牌官网 → 用 browser_fetch（有反爬，需要浏览器渲染）
+         - 新闻网站/搜狐/网易/太平洋汽车 → 用 http_get（无反爬，更快）
+      3. 如果 browser_fetch 也失败：不要重试，直接用搜索结果的 snippet 作为数据
       4. 整合所有信息输出 JSON
 
       核心原则：
-      - 搜索结果的 snippet 本身就是有价值的数据！即使 http_get 全失败，snippet 里有数字就够了
+      - 搜索结果的 snippet 本身就是有价值的数据！即使抓取全失败，snippet 里有数字就够了
       - 不要反复搜索同一个东西，2-3 次搜索后必须停下来输出结果
-      - 不要尝试访问品牌官网（几乎都会被反爬拦截）
+      - 对于有反爬的网站（懂车帝 dongchedi.com、汽车之家 autohome.com.cn、乘联会 cpcaauto.com），优先用 browser_fetch
       - 优先访问新闻/数据类网站（搜狐汽车、网易汽车、太平洋汽车等）
       - content_preview 中保留所有数字、百分比、排名信息
 
@@ -129,8 +132,10 @@ agents:
 tool_permissions:
   research_agent: []               # research only analyzes, doesn't execute
   plan_agent: []                   # plan only structures, doesn't execute
-  code_agent: [http_get, search_web, parse_html]
-  review_agent: [write_to_rag]     # review writes results to knowledge base
+  code_agent: [http_get, browser_fetch, dongchedi_rank, search_web, parse_html]
+  # Pipeline code writes reviewed output deterministically with the initiating
+  # user_id; the LLM must not autonomously publish a document as public.
+  review_agent: []
 
 redis:
   progress_ttl_seconds: 1800       # pipeline progress keys expire after 30 min
