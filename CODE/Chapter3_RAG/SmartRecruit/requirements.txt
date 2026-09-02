@@ -163,7 +163,7 @@ mysql-connector-python==9.4.0
 narwhals==2.0.1
 nest-asyncio==1.6.0
 networkx==3.5
-nltk==3.9.1
+nltk==3.10.3
 nodeenv==1.9.1
 nose2==0.15.1
 numba==0.61.2
