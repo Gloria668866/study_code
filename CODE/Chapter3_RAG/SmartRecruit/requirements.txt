@@ -212,7 +212,7 @@ pymongo==4.13.2
 PyMySQL==1.1.1
 pyOpenSSL==23.3.0
 pyparsing==3.2.3
-pypdf==5.9.0
+pypdf==6.16.1
 PyPDF2==3.0.1
 pyreadline3==3.5.4
 pysbd==0.3.4
