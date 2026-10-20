@@ -205,7 +205,7 @@ pydeck==0.9.1
 pydot==4.0.1
 pyee==13.0.0
 Pygments==2.19.2
-PyJWT==2.10.1
+PyJWT==2.15.0
 pylint==3.3.0
 pymilvus==2.5.2
 pymongo==4.13.2
