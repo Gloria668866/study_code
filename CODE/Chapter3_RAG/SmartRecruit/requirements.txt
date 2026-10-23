@@ -182,7 +182,7 @@ pandas==2.2.3
 pathspec==0.12.1
 patsy==1.0.1
 peft==0.17.0
-pillow==11.3.0
+pillow==13.0.0
 platformdirs==3.11.0
 playwright==1.54.0
 posthog==6.3.3
