@@ -296,7 +296,7 @@ unstructured-client==0.42.0
 urllib3==1.26.7
 uvicorn==0.35.0
 validators==0.35.0
-virtualenv==20.32.0
+virtualenv==21.14.13
 warc3-wet==0.2.5
 warc3-wet-clueweb09==0.2.5
 wasabi==1.1.3
