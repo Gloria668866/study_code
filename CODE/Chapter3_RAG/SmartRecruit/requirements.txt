@@ -104,7 +104,7 @@ humanfriendly==10.0
 identify==2.6.12
 idna==3.10
 ijson==3.4.0
-inscriptis==2.6.0
+inscriptis==2.7.6
 ir_datasets==0.5.11
 isort==5.13.2
 jieba==0.42.1
