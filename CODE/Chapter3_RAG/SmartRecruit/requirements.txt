@@ -148,7 +148,7 @@ MarkupSafe==3.0.2
 marshmallow==3.26.1
 matplotlib==3.10.3
 mccabe==0.7.0
-mcp==1.9.3
+mcp==1.30.0
 mdurl==0.1.2
 milvus-model==0.2.12
 mock==4.0.3
