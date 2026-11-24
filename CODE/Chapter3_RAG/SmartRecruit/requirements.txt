@@ -206,7 +206,7 @@ pydot==4.0.1
 pyee==13.0.0
 Pygments==2.19.2
 PyJWT==2.10.1
-pylint==3.3.0
+pylint==4.0.9
 pymilvus==2.5.2
 pymongo==4.13.2
 PyMySQL==1.1.1
