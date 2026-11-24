@@ -244,7 +244,7 @@ scipy==1.16.1
 scs==3.2.7.post2
 sentence-transformers==5.0.0
 sentencepiece==0.2.0
-setuptools==78.1.1
+setuptools==84.1.0
 shap==0.43.0
 shapely==2.1.1
 shellingham==1.5.4
